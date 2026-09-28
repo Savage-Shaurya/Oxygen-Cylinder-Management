@@ -73,7 +73,9 @@ export function recoverFormValues(
   const next: Record<string, unknown> = Object.fromEntries(
     fields.map((field) => [
       field.name,
-      previous[field.name] ?? initial[field.name] ?? field.value ??
+      previous[field.name] ??
+        initial[field.name] ??
+        field.value ??
         (field.type === 'multiselect' ? [] : ''),
     ]),
   );
@@ -83,10 +85,14 @@ export function recoverFormValues(
     for (const field of fields) {
       if (field.type !== 'select' && field.type !== 'multiselect') continue;
       const choices = typeof field.options === 'function' ? field.options(next) : field.options;
-      const allowed = new Set((choices || []).filter((choice) => !choice.disabled).map((choice) => choice.value));
+      const allowed = new Set(
+        (choices || []).filter((choice) => !choice.disabled).map((choice) => choice.value),
+      );
       const current = next[field.name];
       if (field.type === 'multiselect') {
-        const kept = Array.isArray(current) ? current.filter((value) => allowed.has(String(value))) : [];
+        const kept = Array.isArray(current)
+          ? current.filter((value) => allowed.has(String(value)))
+          : [];
         if (!Array.isArray(current) || kept.length !== current.length) {
           next[field.name] = kept;
           changed = true;
@@ -177,14 +183,18 @@ export function ActionForm({
     setBusy(true);
     try {
       const latest = await onReloadLatest(declaredFormValues(values, activeFields));
-      setValues(latest.resetValues
-        ? recoverFormValues({}, latest.fields, latest.initial)
-        : recoverFormValues(values, latest.fields, latest.initial));
+      setValues(
+        latest.resetValues
+          ? recoverFormValues({}, latest.fields, latest.initial)
+          : recoverFormValues(values, latest.fields, latest.initial),
+      );
       setReloaded(latest);
       setStale(false);
-      setError(latest.resetValues
-        ? 'Latest saved values loaded. Review them before saving your changes again.'
-        : 'Review the refreshed choices before saving. Any unavailable selections were cleared.');
+      setError(
+        latest.resetValues
+          ? 'Latest saved values loaded. Review them before saving your changes again.'
+          : 'Review the refreshed choices before saving. Any unavailable selections were cleared.',
+      );
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Could not reload the latest form.');
     } finally {
@@ -193,9 +203,16 @@ export function ActionForm({
   }
 
   return (
-    <Modal title={reloaded?.title ?? title} subtitle={reloaded?.subtitle ?? subtitle} onClose={onClose} width="wide">
+    <Modal
+      title={reloaded?.title ?? title}
+      subtitle={reloaded?.subtitle ?? subtitle}
+      onClose={onClose}
+      width="wide"
+    >
       <form onSubmit={submit} className="action-form">
-        {(reloaded?.warning ?? warning) && <div className="form-warning">{reloaded?.warning ?? warning}</div>}
+        {(reloaded?.warning ?? warning) && (
+          <div className="form-warning">{reloaded?.warning ?? warning}</div>
+        )}
         <div className="form-grid">
           {activeFields.map((field) => {
             const options =
@@ -226,7 +243,7 @@ export function ActionForm({
                     <div className="multi-select-wrap">
                       {field.name === 'cylinderIds' && (
                         <ScannerInput
-                          placeholder={`Scan ${field.label.toLowerCase()}`}
+                          placeholder="Scan or type a cylinder tag"
                           onScan={(value) => {
                             if (!value) return;
                             const match = options?.find(
@@ -315,7 +332,12 @@ export function ActionForm({
           </div>
         )}
         {stale && onReloadLatest && (
-          <button type="button" className="button btn" disabled={busy} onClick={() => void reloadLatest()}>
+          <button
+            type="button"
+            className="button btn"
+            disabled={busy}
+            onClick={() => void reloadLatest()}
+          >
             Reload latest form
           </button>
         )}

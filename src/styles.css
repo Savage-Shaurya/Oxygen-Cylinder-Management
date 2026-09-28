@@ -1476,6 +1476,15 @@ td strong {
   }
 }
 @media (max-width: 820px) {
+  /* Keep each row's action buttons visible while the other columns scroll sideways. */
+  .table-scroll.has-actions th:last-child,
+  .table-scroll.has-actions td:last-child {
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    background: #fff;
+    box-shadow: -10px 0 10px -10px rgba(16, 38, 29, 0.35);
+  }
   .mobile-only {
     display: grid;
   }

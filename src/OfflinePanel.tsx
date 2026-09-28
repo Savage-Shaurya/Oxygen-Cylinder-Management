@@ -29,7 +29,9 @@ export default function OfflinePanel({
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
   function downloadEvidence(record: QueuedDelivery) {
-    const url = URL.createObjectURL(new Blob([offlineEvidenceDocument(record)], { type: 'application/json' }));
+    const url = URL.createObjectURL(
+      new Blob([offlineEvidenceDocument(record)], { type: 'application/json' }),
+    );
     const link = document.createElement('a');
     link.href = url;
     link.download = `delivery-evidence-${record.id}.json`;
@@ -133,7 +135,11 @@ export default function OfflinePanel({
             </button>
           )}
           {!!visibleRecords.length && (
-            <button className="button btn" disabled={busy || !online || !pendingCount} onClick={() => void sync()}>
+            <button
+              className="button btn"
+              disabled={busy || !online || !pendingCount}
+              onClick={() => void sync()}
+            >
               {busy ? 'Synchronizing…' : 'Sync deliveries'}
             </button>
           )}
@@ -157,16 +163,37 @@ export default function OfflinePanel({
                 {order ? `${order.number} · ${party?.name || 'Customer'}` : 'Saved delivery'} ·{' '}
                 {record.status === 'conflict' ? 'Needs office review' : 'Pending'}
               </strong>
-              <p>Recorded handover: {new Date(String(record.action.payload.occurredAt || record.createdAt)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST</p>
-              <p>Evidence ID: {record.id}</p>
-              <p>Cylinders: {identifiers.map((tag) => tag || 'Identifier unavailable; download evidence for office review').join(', ')}</p>
+              <p>
+                Recorded handover:{' '}
+                {new Date(
+                  String(record.action.payload.occurredAt || record.createdAt),
+                ).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}{' '}
+                IST
+              </p>
+              <p title={record.id}>Evidence ID: {record.id.slice(0, 8)}</p>
+              <p>
+                Cylinders:{' '}
+                {identifiers
+                  .map(
+                    (tag) => tag || 'Identifier unavailable; download evidence for office review',
+                  )
+                  .join(', ')}
+              </p>
               <p>Recipient: {String(record.action.payload.recipient || '')}</p>
               {record.error && <p role="alert">{record.error}</p>}
-              {record.status === 'conflict' && <p>Ask the office to compare this saved claim with server custody, then record the resolution. This entry will not retry automatically.</p>}
+              {record.status === 'conflict' && (
+                <p>
+                  Ask the office to compare this saved claim with server custody, then record the
+                  resolution. This entry will not retry automatically.
+                </p>
+              )}
               <button className="button btn" onClick={() => downloadEvidence(record)}>
                 Download evidence for office review
               </button>
-              <p className="muted">The download contains recipient and delivery details without device encryption. Handle it as a private record.</p>
+              <p className="muted">
+                The download contains recipient and delivery details without device encryption.
+                Handle it as a private record.
+              </p>
               <button
                 className="button btn"
                 onClick={async () => {

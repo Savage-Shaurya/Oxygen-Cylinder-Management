@@ -59,6 +59,10 @@ npm audit
 
 Tests cover lifecycle safety/custody, financial arithmetic, authorization, sessions, idempotency, persistence, backup/restore and offline retry rules. Browser verification is recorded in [validation](docs/validation.md).
 
+## Online demo (Vercel + Supabase)
+
+Follow [docs/deploy-vercel-supabase.md](docs/deploy-vercel-supabase.md) to publish the demo for testers. The server function is `api/index.mjs`, bundled from `server/vercel.ts`; run `npm run bundle:api` after changing server code (a test fails if the bundle is stale). Postgres storage lives in `server/pg-store.ts` and shares its rules with SQLite through `server/store-rules.ts`. Run the Postgres suites against a disposable database with `CTMS_TEST_PG_URL=... CTMS_TEST_PG_PROBE_URL=... npm run test:pg`. Testers follow [Rundown.md](Rundown.md).
+
 ## Initialize a separate live workspace
 
 Never promote the demonstration database. Prepare a configuration JSON containing:

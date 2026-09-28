@@ -36,6 +36,7 @@ import type {
   Role,
   User,
   Gas,
+  Movement,
 } from '../shared/types';
 import { GASES, ROLES } from '../shared/types';
 import { request, login, bootstrap, logout, act, ApiError } from './api';
@@ -170,6 +171,37 @@ const custodian = (s: AppState, c: Cylinder) => {
   return party(s, c.custodianId);
 };
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// Movement records store "custody:id" tokens and raw references; show readable names.
+const place = (s: AppState, token: string) => {
+  if (token === 'new') return 'New record';
+  const [kind, id = ''] = token.split(/:(.*)/s);
+  if (kind === 'plant') return branch(s, id);
+  if (kind === 'customer' || kind === 'supplier') return party(s, id);
+  if (kind === 'vehicle') {
+    const order = s.orders.find((o) => o.id === id);
+    if (order) return `Vehicle ${order.vehicle} · ${order.number}`;
+    const pickup = s.pickups?.find((p) => p.id === id);
+    return pickup ? `Collection vehicle ${pickup.vehicle}` : 'Vehicle';
+  }
+  return token;
+};
+const reference = (s: AppState, ref: string) =>
+  s.orders.find((o) => o.id === ref)?.number ??
+  s.batches.find((b) => b.id === ref)?.number ??
+  s.invoices.find((i) => i.id === ref)?.number ??
+  s.cylinders.find((c) => c.id === ref)?.tag ??
+  s.parties.find((p) => p.id === ref)?.name ??
+  (s.pickups?.some((p) => p.id === ref) ? 'Collection' : ref);
+const movementText = (s: AppState, m: Movement) =>
+  [
+    s.cylinders.find((c) => c.id === m.cylinderId)?.tag ?? '',
+    m.action,
+    display(m.action),
+    reference(s, m.reference),
+    m.actorName,
+    place(s, m.from),
+    place(s, m.to),
+  ].join(' ');
 const person = (people: { id: string; name: string }[], id: string) =>
   people.find((u) => u.id === id)?.name || id;
 const gasTone = (c: Cylinder) =>
@@ -480,6 +512,11 @@ export default function App() {
     });
   }
   function writeOff(c: Cylinder) {
+    // If rent was already stopped for this incident, the write-off must use that same date.
+    const stoppedOn = s.rentals.find(
+      (r) =>
+        r.cylinderId === c.id && r.end && !s.rentals.some((x) => x.cylinderId === c.id && !x.end),
+    )?.end;
     open({
       title: `Write off lost cylinder · ${c.tag}`,
       warning:
@@ -488,10 +525,10 @@ export default function App() {
       fields: [
         {
           name: 'stopDate',
-          label: 'Rental stop date',
+          label: stoppedOn ? 'Rental stop date (already approved)' : 'Rental stop date',
           type: 'date',
           required: true,
-          value: today(),
+          value: stoppedOn ?? today(),
         },
         authorizationField,
         { name: 'reason', label: 'Writeoff approval reason', type: 'textarea', required: true },
@@ -1438,7 +1475,11 @@ export default function App() {
         const rows = parsed.map((columns, index) => {
           if (columns.length !== required.length || columns.some((value) => !value))
             throw new Error(`Row ${index + 2} needs all eight values`);
-          return Object.fromEntries(required.map((name, i) => [name, columns[i]]));
+          const row: Record<string, string> = Object.fromEntries(
+            required.map((name, i) => [name, columns[i]]),
+          );
+          row.ownerId = importRefs.owner(row.ownerId, text(v.branchId));
+          return row;
         });
         await run('purchase.receive', {
           supplierId: v.supplierId,
@@ -1984,11 +2025,32 @@ export default function App() {
       setToast(e instanceof Error ? e.message : 'Export failed');
     }
   }
+  // CSV imports accept readable names as well as internal codes: "Delhi" or "b-delhi",
+  // "Company owned" or "company", a customer/supplier name or its ID, any-case gas names.
+  const importRefs = {
+    branch: (value: string) => {
+      const v = value.trim().toLowerCase();
+      return (
+        s.branches.find((b) => [b.id, b.name, b.city].some((x) => x.toLowerCase() === v))?.id ??
+        value.trim()
+      );
+    },
+    owner: (value: string, branchId: string) => {
+      const v = value.trim().toLowerCase();
+      if (v === 'company' || v === 'company owned') return 'company';
+      const matches = s.parties.filter(
+        (p) => p.id.toLowerCase() === v || p.name.toLowerCase() === v,
+      );
+      return (matches.find((p) => p.branchId === branchId) ?? matches[0])?.id ?? value.trim();
+    },
+    gas: (value: string) =>
+      GASES.find((g) => g.toLowerCase() === value.trim().toLowerCase()) ?? value.trim(),
+  };
   function importCsv() {
     open({
       title: 'Import cylinders',
       subtitle:
-        'Upload a CSV file or paste rows. Required columns: serial,tag,manufacturer,gas,size,ownerId,branchId,testDue,lastTest,certificate. Maximum 500 rows; import is atomic.',
+        'Upload a CSV file or paste rows. Required columns: serial,tag,manufacturer,gas,size,ownerId,branchId,testDue,lastTest,certificate. ownerId may be "Company owned" or a customer name; branchId may be the branch name (for example Delhi). Dates use YYYY-MM-DD. Maximum 500 rows; if any row is wrong, nothing is imported.',
       fields: [
         { name: 'file', label: 'CSV file', type: 'file', span: 'full' },
         { name: 'csv', label: 'Or paste CSV data', type: 'textarea', span: 'full' },
@@ -2014,7 +2076,13 @@ export default function App() {
             throw new Error(
               `Row ${index + 2} has ${cols.length} columns; expected ${headers.length}`,
             );
-          return Object.fromEntries(headers.map((h, i) => [h, cols[i] || '']));
+          const row: Record<string, string> = Object.fromEntries(
+            headers.map((h, i) => [h, cols[i] || '']),
+          );
+          row.branchId = importRefs.branch(row.branchId);
+          row.ownerId = importRefs.owner(row.ownerId, row.branchId);
+          row.gas = importRefs.gas(row.gas);
+          return row;
         });
         await run('cylinders.import', { rows });
       },
@@ -2450,13 +2518,17 @@ function Login({
 }) {
   const [email, setEmail] = useState(mode === 'demo' ? 'operations@batra.demo' : ''),
     [password, setPassword] = useState(mode === 'demo' ? 'OxygenDemo!2026' : ''),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    // Demo mode lists the built-in accounts; members added in Settings sign in by email.
+    [otherAccount, setOtherAccount] = useState(false);
   useEffect(() => {
     if (mode === 'demo') {
       setEmail('operations@batra.demo');
       setPassword('OxygenDemo!2026');
+      setOtherAccount(false);
     }
   }, [mode]);
+  const typedEmail = mode !== 'demo' || otherAccount;
   return (
     <div className="login-screen">
       <div className="login-panel">
@@ -2502,27 +2574,44 @@ function Login({
               ? 'Choose a demo role to explore its permitted work.'
               : 'Enter your assigned account credentials.'}
           </p>
-          <label className="field">
-            <span className="field-label">
-              {mode === 'demo' ? 'Demo account' : 'Email address'}
-            </span>
-            {mode === 'demo' ? (
-              <select value={email} onChange={(e) => setEmail(e.target.value)}>
+          {mode === 'demo' && (
+            <label className="field">
+              <span className="field-label">Demo account</span>
+              <select
+                value={otherAccount ? 'other' : email}
+                onChange={(e) => {
+                  if (e.target.value === 'other') {
+                    setOtherAccount(true);
+                    setEmail('');
+                    setPassword('');
+                  } else {
+                    setOtherAccount(false);
+                    setEmail(e.target.value);
+                    setPassword('OxygenDemo!2026');
+                  }
+                }}
+              >
                 {ROLES.map((role) => (
                   <option value={`${role}@batra.demo`} key={role}>
                     {roleLabels[role]} · {role}@batra.demo
                   </option>
                 ))}
+                <option value="other">Other account (type an email)</option>
               </select>
-            ) : (
+            </label>
+          )}
+          {typedEmail && (
+            <label className="field">
+              <span className="field-label">Email address</span>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="username"
                 required
               />
-            )}
-          </label>
+            </label>
+          )}
           <label className="field">
             <span className="field-label">Password</span>
             <input
@@ -2845,8 +2934,10 @@ function Overview({
 }
 
 function Table({ headers, children }: { headers: string[]; children: ReactNode }) {
+  // Row actions stay pinned in view on narrow screens (see .has-actions in styles.css).
+  const hasActions = headers.at(-1) === 'Actions';
   return (
-    <div className="table-scroll">
+    <div className={hasActions ? 'table-scroll has-actions' : 'table-scroll'}>
       <table>
         <thead>
           <tr>
@@ -4082,6 +4173,11 @@ function Reports({
 }) {
   const [tab, setTab] = useState<'stock' | 'movement' | 'audit'>('stock'),
     [query, setQuery] = useState('');
+  // Each tab searches different records, so a search never carries over between tabs.
+  const switchTab = (next: 'stock' | 'movement' | 'audit') => {
+    setTab(next);
+    setQuery('');
+  };
   const grouped = s.branches.flatMap((b) =>
     GASES.map((g) => {
       const c = s.cylinders.filter((c) => c.branchId === b.id && c.gas === g);
@@ -4151,14 +4247,14 @@ function Reports({
                           : -1;
                 if (next >= 0) {
                   event.preventDefault();
-                  setTab(ids[next]);
+                  switchTab(ids[next]);
                   document.getElementById(`report-tab-${ids[next]}`)?.focus();
                 }
               }}
               aria-selected={tab === t.id}
               key={t.id}
               className={tab === t.id ? 'active' : ''}
-              onClick={() => setTab(t.id as typeof tab)}
+              onClick={() => switchTab(t.id as typeof tab)}
             >
               {t.name}
             </button>
@@ -4211,19 +4307,13 @@ function Reports({
                 placeholder="Search cylinder, action, reference…"
               />
               {s.movements.filter((m) =>
-                [m.cylinderId, m.action, m.reference, m.actorName].some((x) =>
-                  x.toLowerCase().includes(query.toLowerCase()),
-                ),
+                movementText(s, m).toLowerCase().includes(query.toLowerCase()),
               ).length ? (
                 <Table
                   headers={['When', 'Cylinder', 'Movement', 'From → to', 'Actor', 'Reference']}
                 >
                   {s.movements
-                    .filter((m) =>
-                      [m.cylinderId, m.action, m.reference, m.actorName].some((x) =>
-                        x.toLowerCase().includes(query.toLowerCase()),
-                      ),
-                    )
+                    .filter((m) => movementText(s, m).toLowerCase().includes(query.toLowerCase()))
                     .slice(0, 200)
                     .map((m) => (
                       <tr key={m.id}>
@@ -4233,11 +4323,11 @@ function Reports({
                         </td>
                         <td>{display(m.action)}</td>
                         <td>
-                          {m.from} → {m.to}
+                          {place(s, m.from)} → {place(s, m.to)}
                         </td>
                         <td>{m.actorName}</td>
                         <td>
-                          {m.reference}
+                          {reference(s, m.reference)}
                           <small className="cell-sub">{m.notes}</small>
                         </td>
                       </tr>
@@ -4625,10 +4715,10 @@ function Detail({
                         <div>
                           <strong>{display(m.action)}</strong>
                           <p>
-                            {m.from} → {m.to}
+                            {place(s, m.from)} → {place(s, m.to)}
                           </p>
                           <small>
-                            {datetime(m.at)} · {m.actorName} · {m.reference}
+                            {datetime(m.at)} · {m.actorName} · {reference(s, m.reference)}
                           </small>
                           {m.notes && <small>{m.notes}</small>}
                         </div>

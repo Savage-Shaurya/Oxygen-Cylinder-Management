@@ -218,3 +218,32 @@ test('unallocation rejects a corrected legacy target to avoid duplicate customer
  current.creditedPaise=current.totalPaise; current.status='credited';
  denies(()=>act(s,'finance.creditUnallocate',{receiptId:receipt.id,reason:'Correct prior allocation'},'finance'),/after invoice correction/i);
 });
+
+test('an allocation onto an invoice corrected earlier can still be reversed',()=>{
+ let s=seed(); const source=s.invoices.find(x=>x.id==='inv-seed-1')!;
+ source.paidPaise=source.totalPaise; source.status='paid';
+ const target=structuredClone(source); target.id='partly-credited-target'; target.number='GINV-PART'; target.paidPaise=0; target.status='issued'; s.invoices.push(target);
+ s=act(s,'finance.credit',{invoiceId:target.id,amountPaise:1000,reason:'Half price'},'finance');
+ s=act(s,'finance.credit',{invoiceId:source.id,amountPaise:1000,reason:'Goodwill'},'finance');
+ const note=s.invoices.at(-1)!;
+ const before=s.invoices.find(x=>x.id===target.id)!;
+ const owedBefore=before.totalPaise-(before.creditedPaise??0)-before.paidPaise;
+ s=act(s,'finance.creditAllocate',{creditInvoiceId:note.id,invoiceId:target.id,amountPaise:500,reason:'Apply'},'finance');
+ const receipt=s.receipts.at(-1)!;
+ s=act(s,'finance.creditUnallocate',{receiptId:receipt.id,reason:'Applied to wrong invoice'},'finance');
+ const after=s.invoices.find(x=>x.id===target.id)!;
+ assert.equal(after.appliedCreditPaise,0);
+ assert.equal(after.totalPaise-(after.creditedPaise??0)-after.paidPaise,owedBefore);
+ assert.equal(after.status,'issued');
+});
+
+test('write-off after an approved rent stop explains which date to use',()=>{
+ let s=seed(); const c=s.cylinders.find(x=>x.id==='c-001')!;
+ s=act(s,'cylinder.offsiteIncident',{cylinderId:c.id,version:c.version,kind:'lost',notes:'Missing'},'admin');
+ const lost=()=>s.cylinders.find(x=>x.id===c.id)!;
+ const start=s.rentals.find(r=>r.cylinderId===c.id&&!r.end)!.start;
+ s=act(s,'rental.stopIncident',{cylinderId:c.id,version:lost().version,stopDate:start,reason:'Approved'},'admin');
+ denies(()=>act(s,'cylinder.writeoff',{cylinderId:c.id,version:lost().version,stopDate:'2026-09-28',reason:'Lost'},'admin'),new RegExp(`Rent already stopped on ${start}`));
+ s=act(s,'cylinder.writeoff',{cylinderId:c.id,version:lost().version,stopDate:start,reason:'Lost'},'admin');
+ assert.equal(lost().condition,'retired');
+});

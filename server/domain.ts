@@ -539,6 +539,7 @@ function addReceipt(
     kind: 'payment' | 'deposit' | 'refund' | 'credit_refund' | 'credit_allocation';
     creditInvoiceId?: string;
     reason?: string;
+    targetCreditedPaise?: number;
   },
 ) {
   receiptReference(state, p.partyId, p.method, p.reference);
@@ -588,6 +589,10 @@ function stopIncidentRent(state: AppState, ctx: ActionContext, c: Cylinder, stop
   const active = state.rentals.filter(r => r.cylinderId === c.id && !r.end);
   const stopped = state.rentals.find(r => r.cylinderId === c.id && r.end === stopDate);
   if (allowStopped && active.length === 0 && stopped) return;
+  if (active.length === 0 && c.offsiteIncident) {
+    const earlier = state.rentals.filter((r) => r.cylinderId === c.id && r.end).at(-1)?.end;
+    if (earlier) fail(`Rent already stopped on ${earlier}; use that date`);
+  }
   if (active.length !== 1) fail('Active rental missing');
   const r = active[0];
   if (stopDate < r.start) fail('Stop date cannot precede rental start');
@@ -1553,7 +1558,7 @@ export function applyAction(
       const target = object(s.invoices, p.invoiceId, 'Invoice', ctx, s);
       if (note.type !== 'credit' || target.type === 'credit' || note.partyId !== target.partyId || note.id === target.id) fail('Credit allocation requires same customer');
       if (p.amountPaise > creditNoteAvailable(s, note.id) || p.amountPaise > invoiceOutstanding(target)) fail('Credit allocation exceeds available balance');
-      const r = addReceipt(s, ctx, {partyId: target.partyId, invoiceId: target.id, creditInvoiceId: note.id, amountPaise: p.amountPaise, method: 'credit', reference: `${note.id}:${target.id}:${ctx.id()}`, kind: 'credit_allocation', reason: p.reason});
+      const r = addReceipt(s, ctx, {partyId: target.partyId, invoiceId: target.id, creditInvoiceId: note.id, amountPaise: p.amountPaise, method: 'credit', reference: `${note.id}:${target.id}:${ctx.id()}`, kind: 'credit_allocation', reason: p.reason, targetCreditedPaise: target.creditedPaise ?? 0});
       target.appliedCreditPaise = checked((target.appliedCreditPaise ?? 0) + p.amountPaise);
       target.status = invoiceOutstanding(target) === 0 ? 'paid' : 'partial';
       entityId = r.id; message = 'Customer credit allocated';
@@ -1575,7 +1580,11 @@ export function applyAction(
       const target = object(s.invoices, targetId, 'Invoice', ctx, s);
       object(s.invoices, creditId, 'Credit note', ctx, s);
       if (original.reversedAt) fail('Credit allocation already reversed', 409);
-      if ((target.creditedPaise ?? 0) > 0 || target.status === 'credited') fail('Cannot reverse allocation after invoice correction', 409);
+      // A correction made before this allocation is safe to keep. Reversal is refused if the
+      // invoice was corrected since (older allocations did not record the corrected amount).
+      const correctedSince = (target.creditedPaise ?? 0) !== (original.targetCreditedPaise ?? 0);
+      if (target.status === 'credited' || correctedSince)
+        fail('Cannot reverse allocation after invoice correction', 409);
       if ((target.appliedCreditPaise ?? 0) < original.amountPaise) fail('Credit allocation balance invalid');
       original.reversedAt = ctx.now;
       original.reversalReason = p.reason;

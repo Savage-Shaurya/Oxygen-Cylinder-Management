@@ -1,10 +1,35 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, existsSync, rmSync, openSync, closeSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { hashPassword, tokenHash, verifyPassword, type StoredUser } from './auth.js';
 import { createSeedState } from './seed.js';
-import { actionPermitted, applyAction } from './domain.js';
+import {
+  DEMO_PASSWORD,
+  SESSION_IDLE_MS,
+  SESSION_TTL_MS,
+  StoreError,
+  assertValidPassword,
+  buildNewUser,
+  checkModeCompatibility,
+  checkRequestEnvelope,
+  checkResetPassword,
+  checkResetTarget,
+  demoRoles,
+  idempotencyResult,
+  managementEvent,
+  passwordEvent,
+  planUserUpdate,
+  preDomainChecks,
+  replayPrior,
+  requestedDriverId,
+  runDomain,
+  settingsGuard,
+  validEmail,
+  withManagementAudit,
+  type NewUserInput,
+  type UserUpdateInput,
+} from './store-rules.js';
 import type {
   ActionRequest,
   ActionResult,
@@ -14,29 +39,13 @@ import type {
   User,
 } from '../shared/types.ts';
 
-export class StoreError extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-  ) {
-    super(message);
-  }
-}
+export { StoreError };
 export interface StoreOptions {
   dbPath?: string;
   demoMode?: boolean;
   production?: boolean;
   provisioning?: boolean;
 }
-const demoRoles: Array<[Role, string, string]> = [
-  ['admin', 'u-admin', 'Admin'],
-  ['operations', 'u-ops', 'Operations'],
-  ['quality', 'u-quality', 'Quality'],
-  ['finance', 'u-finance', 'Finance'],
-  ['driver', 'u-driver', 'Driver'],
-  ['auditor', 'u-auditor', 'Auditor'],
-];
-const stableHash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 function secureDatabaseFile(path: string) {
   if (path !== ':memory:' && !existsSync(path)) closeSync(openSync(path, 'wx', 0o600));
 }
@@ -48,19 +57,6 @@ function privateSqliteWrite(write: () => void, path: string) {
   } finally {
     process.umask(oldMask);
   }
-}
-function validEmail(email: string): boolean {
-  const normalized = email.trim().toLowerCase();
-  return (
-    normalized.length <= 254 &&
-    /^\S+@\S+\.\S+$/.test(normalized) &&
-    !normalized.endsWith('@batra.demo')
-  );
-}
-function validPassword(password: string): boolean {
-  return (
-    password.length >= 12 && password.length <= 256 && /[\p{L}\p{N}\p{S}\p{P}]/u.test(password)
-  );
 }
 export class Store {
   readonly db: DatabaseSync;
@@ -101,29 +97,17 @@ export class Store {
       }
       this.seedDemo();
     }
-    if (this.demoMode && existing.n > 0) {
-      const states = this.db.prepare('SELECT state_json FROM org_state').all() as {
-        state_json: string;
-      }[];
-      if (states.some((row) => JSON.parse(row.state_json).settings?.mode === 'live')) {
-        this.db.close();
-        throw new Error('Live state cannot run in demo mode');
-      }
-    }
-    if (!this.demoMode) {
-      if (existing.n === 0 && !options.provisioning)
-        throw new Error(
-          'No production users provisioned; restore or initialize a production database',
-        );
-      const demo = this.db
-        .prepare("SELECT COUNT(*) AS n FROM users WHERE email LIKE '%@batra.demo'")
-        .get() as { n: number };
-      if (demo.n) throw new Error('Demo accounts cannot run outside demo mode');
-      const states = this.db.prepare('SELECT state_json FROM org_state').all() as {
-        state_json: string;
-      }[];
-      if (states.some((row) => JSON.parse(row.state_json).settings?.mode === 'demo'))
-        throw new Error('Demo state cannot run outside demo mode');
+    const demo = this.db
+      .prepare("SELECT COUNT(*) AS n FROM users WHERE email LIKE '%@batra.demo'")
+      .get() as { n: number };
+    const modes = (
+      this.db.prepare('SELECT state_json FROM org_state').all() as { state_json: string }[]
+    ).map((row) => JSON.parse(row.state_json).settings?.mode as string | undefined);
+    try {
+      checkModeCompatibility(this.demoMode, existing.n, demo.n, modes, options.provisioning);
+    } catch (error) {
+      this.db.close();
+      throw error;
     }
   }
   close() {
@@ -156,7 +140,7 @@ export class Store {
           role,
           JSON.stringify(['b-delhi', 'b-faridabad']),
           1,
-          hashPassword('OxygenDemo!2026'),
+          hashPassword(DEMO_PASSWORD),
         );
       for (const event of [...state.audit].reverse()) this.appendAudit('batra', event);
     });
@@ -195,12 +179,12 @@ export class Store {
     const now = Date.now();
     this.db
       .prepare('DELETE FROM sessions WHERE expires_at<=? OR last_seen_at<=?')
-      .run(now, now - 30 * 60_000);
+      .run(now, now - SESSION_IDLE_MS);
     this.db
       .prepare(
         'INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at,last_seen_at) VALUES (?,?,?,?,?)',
       )
-      .run(tokenHash(token), user.id, csrf, now + 12 * 60 * 60 * 1000, now);
+      .run(tokenHash(token), user.id, csrf, now + SESSION_TTL_MS, now);
   }
   session(token: string): { user: StoredUser; csrfToken: string } | undefined {
     const now = Date.now();
@@ -209,7 +193,8 @@ export class Store {
       .prepare(
         'SELECT user_id,csrf_token FROM sessions WHERE token_hash=? AND expires_at>? AND last_seen_at>?',
       )
-      .get(hashed, now, now - 30 * 60_000) as { user_id: string; csrf_token: string } | undefined;
+      .get(hashed, now, now - SESSION_IDLE_MS) as
+      { user_id: string; csrf_token: string } | undefined;
     if (!row) return;
     const user = this.getUser(row.user_id);
     if (user?.active)
@@ -226,6 +211,13 @@ export class Store {
     const row = this.db.prepare('SELECT epoch FROM user_auth_epoch WHERE user_id=?').get(id) as
       { epoch: number } | undefined;
     return row?.epoch ?? 0;
+  }
+  private bumpAuthEpoch(id: string) {
+    this.db
+      .prepare(
+        'INSERT INTO user_auth_epoch(user_id,epoch) VALUES (?,1) ON CONFLICT(user_id) DO UPDATE SET epoch=epoch+1',
+      )
+      .run(id);
   }
   getState(orgId: string): AppState {
     const row = this.db.prepare('SELECT state_json FROM org_state WHERE org_id=?').get(orgId) as
@@ -250,9 +242,7 @@ export class Store {
       );
   }
   private recordManagementAudit(orgId: string, event: AuditEvent) {
-    const state = this.getState(orgId);
-    state.revision++;
-    state.audit = [event, ...state.audit];
+    const state = withManagementAudit(this.getState(orgId), event);
     this.db
       .prepare('UPDATE org_state SET revision=?,state_json=? WHERE org_id=?')
       .run(state.revision, JSON.stringify(state), orgId);
@@ -276,27 +266,10 @@ export class Store {
     }));
   }
   apply(user: User, request: ActionRequest): ActionResult {
-    if (
-      typeof request.idempotencyKey !== 'string' ||
-      !request.idempotencyKey.trim() ||
-      request.idempotencyKey.length > 128
-    )
-      throw new StoreError('Idempotency key required');
-    const hash = stableHash({
-      type: request.type,
-      payload: request.payload,
-      expectedRevision: request.expectedRevision,
-    });
-    // Role check first, so a blocked role never sees payload-specific validation errors.
-    if (!actionPermitted(request.type, user.role))
-      throw new StoreError('Action not permitted', 403);
+    const hash = checkRequestEnvelope(user, request);
     return this.transaction(() => {
       const old = this.getState(user.orgId);
-      if (
-        request.type === 'settings.update' &&
-        (user.role !== 'admin' || !old.branches.every((b) => user.branchIds.includes(b.id)))
-      )
-        throw new StoreError('Organization administrator required', 403);
+      settingsGuard(old, user, request);
       const authEpoch = this.authEpoch(user.id);
       const prior = this.db
         .prepare(
@@ -304,82 +277,15 @@ export class Store {
         )
         .get(user.orgId, user.id, request.idempotencyKey) as
         { request_hash: string; result_json: string } | undefined;
-      if (prior) {
-        if (prior.request_hash !== hash)
-          throw new StoreError('Idempotency key reused with different request', 409);
-        const metadata = JSON.parse(prior.result_json) as Pick<
-          ActionResult,
-          'message' | 'entityId'
-        > & { authEpoch?: number };
-        if ((metadata.authEpoch ?? 0) !== authEpoch)
-          throw new StoreError('Authorization changed; submit a new request', 403);
-        return { message: metadata.message, entityId: metadata.entityId, state: old };
-      }
-      if (
-        (request.type === 'party.update' || request.type === 'settings.update') &&
-        request.expectedRevision === undefined &&
-        !Number.isInteger(request.payload?.expectedVersion)
-      )
-        throw new StoreError('Entity version required for overwrite');
-      if (request.expectedRevision !== undefined && request.expectedRevision !== old.revision)
-        throw new StoreError('State changed; refresh and retry', 409);
-      if (request.type === 'order.dispatch' || request.type === 'cylinder.collect') {
-        const order =
-          request.type === 'order.dispatch'
-            ? old.orders.find((o) => o.id === request.payload?.orderId)
-            : undefined;
-        const party =
-          request.type === 'cylinder.collect'
-            ? old.parties.find((p) => p.id === request.payload?.partyId)
-            : undefined;
-        const branchId = order?.branchId ?? party?.branchId;
-        const driver =
-          typeof request.payload?.driverId === 'string'
-            ? this.getUser(request.payload.driverId)
-            : undefined;
-        if (
-          !branchId ||
-          !driver ||
-          !driver.active ||
-          driver.role !== 'driver' ||
-          driver.orgId !== user.orgId ||
-          !driver.branchIds.includes(branchId)
-        )
-          throw new StoreError('Active branch driver required');
-        if (request.type === 'cylinder.collect' && user.role === 'driver') {
-          if (driver.id !== user.id) throw new StoreError('Driver can only collect for self', 403);
-          const day = (at: string) =>
-            new Intl.DateTimeFormat('en-CA', {
-              timeZone: 'Asia/Kolkata',
-              year: 'numeric',
-              month: '2-digit',
-              day: '2-digit',
-            }).format(new Date(at));
-          const today = day(new Date().toISOString());
-          const assigned = old.orders.some(
-            (o) =>
-              o.partyId === party?.id &&
-              o.driverId === user.id &&
-              (o.status === 'dispatched' ||
-                o.status === 'partial' ||
-                (o.status === 'delivered' && o.deliveredAt && day(o.deliveredAt) === today)),
-          );
-          if (!assigned) throw new StoreError('No current assigned work for customer', 403);
-        }
-      }
-      const result = applyAction(old, request, {
-        user,
-        now: new Date().toISOString(),
-        id: randomUUID,
-      });
-      if (result.state.revision !== old.revision + 1) throw new Error('Invalid domain revision');
+      if (prior) return replayPrior(prior, hash, authEpoch, old);
+      const driverId = requestedDriverId(request);
+      preDomainChecks(old, request, user, driverId ? this.getUser(driverId) : undefined);
+      const { result, newAudit } = runDomain(old, request, user);
       const update = this.db
         .prepare('UPDATE org_state SET revision=?,state_json=? WHERE org_id=? AND revision=?')
         .run(result.state.revision, JSON.stringify(result.state), user.orgId, old.revision);
       if (update.changes !== 1) throw new StoreError('State changed; refresh and retry', 409);
-      const priorIds = new Set(old.audit.map((a) => a.id));
-      for (const event of [...result.state.audit].reverse())
-        if (!priorIds.has(event.id)) this.appendAudit(user.orgId, event);
+      for (const event of newAudit) this.appendAudit(user.orgId, event);
       this.db
         .prepare('INSERT INTO idempotency VALUES (?,?,?,?,?)')
         .run(
@@ -387,41 +293,14 @@ export class Store {
           user.id,
           request.idempotencyKey,
           hash,
-          JSON.stringify({ message: result.message, entityId: result.entityId, authEpoch }),
+          idempotencyResult(result, authEpoch),
         );
       return result;
     });
   }
-  createUser(
-    actor: User,
-    input: { name: string; email: string; password: string; role: Role; branchIds: string[] },
-  ): StoredUser {
+  createUser(actor: User, input: NewUserInput): StoredUser {
     return this.transaction(() => {
-      const state = this.getState(actor.orgId);
-      if (input.branchIds?.some((id) => !actor.branchIds.includes(id)))
-        throw new StoreError('Forbidden branch assignment', 403);
-      if (!input.name?.trim() || input.name.length > 120)
-        throw new StoreError('Enter a name of up to 120 characters');
-      if (!validEmail(input.email)) throw new StoreError('Enter a valid email address');
-      if (!validPassword(input.password))
-        throw new StoreError(
-          'Password must be 12–256 characters and contain a non-space character',
-        );
-      if (
-        !input.branchIds?.length ||
-        input.branchIds.some((id) => !state.branches.some((b) => b.id === id))
-      )
-        throw new StoreError('Choose at least one branch');
-      const user: StoredUser = {
-        id: randomUUID(),
-        orgId: actor.orgId,
-        name: input.name.trim(),
-        email: input.email.trim().toLowerCase(),
-        role: input.role,
-        branchIds: [...new Set(input.branchIds)],
-        active: true,
-        passwordHash: hashPassword(input.password),
-      };
+      const user = buildNewUser(actor, input, this.getState(actor.orgId));
       try {
         this.db
           .prepare('INSERT INTO users VALUES (?,?,?,?,?,?,?,?)')
@@ -438,98 +317,41 @@ export class Store {
       } catch {
         throw new StoreError('Email already in use', 409);
       }
-      this.recordManagementAudit(actor.orgId, {
-        id: randomUUID(),
-        at: new Date().toISOString(),
-        actorId: actor.id,
-        actorName: actor.name,
-        action: 'user.create',
-        entityId: user.id,
-        summary: `Created user ${user.email}`,
-      });
+      this.recordManagementAudit(
+        actor.orgId,
+        managementEvent(actor, 'user.create', user.id, `Created user ${user.email}`),
+      );
       return user;
     });
   }
-  updateUser(
-    actor: User,
-    id: string,
-    input: { active?: boolean; role?: Role; branchIds?: string[] },
-  ): StoredUser {
+  updateUser(actor: User, id: string, input: UserUpdateInput): StoredUser {
     return this.transaction(() => {
       const target = this.getUser(id);
-      if (!target || target.orgId !== actor.orgId) throw new StoreError('User not found', 404);
-      if (
-        target.branchIds.some((b) => !actor.branchIds.includes(b)) ||
-        input.branchIds?.some((b) => !actor.branchIds.includes(b))
-      )
-        throw new StoreError('Forbidden branch assignment', 403);
-      const state = this.getState(actor.orgId);
-      if (
-        input.branchIds &&
-        (!input.branchIds.length ||
-          input.branchIds.some((b) => !state.branches.some((x) => x.id === b)))
-      )
-        throw new StoreError('Invalid branches');
-      const active = input.active ?? target.active;
-      const role = input.role ?? target.role;
-      const nextBranches = [...new Set(input.branchIds ?? target.branchIds)];
-      if (id === actor.id && (!active || role !== 'admin'))
-        throw new StoreError('Cannot disable your own admin account');
-      if (
-        target.role === 'admin' &&
-        target.active &&
-        (!active || role !== 'admin') &&
-        this.getUsers(actor.orgId).filter((u) => u.active && u.role === 'admin').length <= 1
-      )
-        throw new StoreError('Cannot remove final admin');
-      const allBranches = state.branches.map((branch) => branch.id);
-      const isOrgAdmin = (candidate: StoredUser) =>
-        candidate.active &&
-        candidate.role === 'admin' &&
-        allBranches.every((branch) => candidate.branchIds.includes(branch));
-      if (
-        isOrgAdmin(target) &&
-        (!active ||
-          role !== 'admin' ||
-          !allBranches.every((branch) => nextBranches.includes(branch))) &&
-        this.getUsers(actor.orgId).filter(isOrgAdmin).length <= 1
-      )
-        throw new StoreError('Cannot remove final organization administrator');
-      const authorizationReduced =
-        (target.active && !active) ||
-        role !== target.role ||
-        target.branchIds.some((branch) => !nextBranches.includes(branch));
-      const changed =
-        active !== target.active ||
-        role !== target.role ||
-        JSON.stringify(nextBranches) !== JSON.stringify(target.branchIds);
-      if (!changed) return target;
+      const plan = planUserUpdate(
+        actor,
+        id,
+        target,
+        input,
+        this.getState(actor.orgId),
+        this.getUsers(actor.orgId),
+      );
+      if (!plan.changed) return target!;
       this.db
         .prepare('UPDATE users SET active=?,role=?,branch_ids=? WHERE id=?')
-        .run(Number(active), role, JSON.stringify(nextBranches), id);
-      if (authorizationReduced) {
-        this.db
-          .prepare(
-            'INSERT INTO user_auth_epoch(user_id,epoch) VALUES (?,1) ON CONFLICT(user_id) DO UPDATE SET epoch=epoch+1',
-          )
-          .run(id);
+        .run(Number(plan.active), plan.role, JSON.stringify(plan.nextBranches), id);
+      if (plan.authorizationReduced) {
+        this.bumpAuthEpoch(id);
         this.revokeUserSessions(id);
       }
-      this.recordManagementAudit(actor.orgId, {
-        id: randomUUID(),
-        at: new Date().toISOString(),
-        actorId: actor.id,
-        actorName: actor.name,
-        action: 'user.update',
-        entityId: id,
-        summary: `Updated user ${target.email}`,
-      });
+      this.recordManagementAudit(
+        actor.orgId,
+        managementEvent(actor, 'user.update', id, `Updated user ${target!.email}`),
+      );
       return this.getUser(id)!;
     });
   }
   changePassword(actor: StoredUser, currentPassword: string, newPassword: string): void {
-    if (!validPassword(newPassword))
-      throw new StoreError('Password must be 12–256 characters and contain a non-space character');
+    assertValidPassword(newPassword);
     this.transaction(() => {
       const current = this.getUser(actor.id);
       if (!current?.active || !verifyPassword(currentPassword, current.passwordHash))
@@ -538,42 +360,18 @@ export class Store {
     });
   }
   resetPassword(actor: StoredUser, id: string, newPassword: string): void {
-    if (actor.role !== 'admin') throw new StoreError('Forbidden', 403);
-    if (actor.id === id)
-      throw new StoreError('Use current password to change your own password', 400);
-    if (!validPassword(newPassword))
-      throw new StoreError('Password must be 12–256 characters and contain a non-space character');
+    checkResetPassword(actor, id, newPassword);
     this.transaction(() => {
-      const target = this.getUser(id);
-      if (
-        !target ||
-        target.orgId !== actor.orgId ||
-        !target.branchIds.every((branch) => actor.branchIds.includes(branch))
-      )
-        throw new StoreError('User not found', 404);
-      this.setPassword(target, newPassword, actor);
+      this.setPassword(checkResetTarget(actor, this.getUser(id)), newPassword, actor);
     });
   }
   private setPassword(target: StoredUser, password: string, actor: StoredUser): void {
     this.db
       .prepare('UPDATE users SET password_hash=? WHERE id=?')
       .run(hashPassword(password), target.id);
-    this.db
-      .prepare(
-        'INSERT INTO user_auth_epoch(user_id,epoch) VALUES (?,1) ON CONFLICT(user_id) DO UPDATE SET epoch=epoch+1',
-      )
-      .run(target.id);
+    this.bumpAuthEpoch(target.id);
     this.revokeUserSessions(target.id);
-    this.recordManagementAudit(actor.orgId, {
-      id: randomUUID(),
-      at: new Date().toISOString(),
-      actorId: actor.id,
-      actorName: actor.name,
-      action: actor.id === target.id ? 'user.password_change' : 'user.password_reset',
-      entityId: target.id,
-      summary:
-        actor.id === target.id ? 'User changed own password' : `Password reset for ${target.email}`,
-    });
+    this.recordManagementAudit(actor.orgId, passwordEvent(actor, target));
   }
   backup(destination: string) {
     privateSqliteWrite(() => this.db.prepare('VACUUM INTO ?').run(destination), destination);

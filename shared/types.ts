@@ -191,6 +191,8 @@ export interface Receipt {
   reason?: string;
   reversedAt?: string;
   reversalReason?: string;
+  /** Target invoice's corrected amount when credit was applied (allocations only). */
+  targetCreditedPaise?: number;
 }
 export interface AuditEvent {
   id: string;

@@ -7,8 +7,71 @@ import type { Server } from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { createApp } from '../server/app.js';
 import type { Store } from '../server/store.js';
+import { createHttpApp } from '../server/http-app.js';
+import { PgStore } from '../server/pg-store.js';
+
+// Set CTMS_TEST_PG_URL to run this suite against Postgres (the hosted storage) instead of SQLite.
+const pgUrl = process.env.CTMS_TEST_PG_URL;
+const sqliteOnly = pgUrl ? { skip: 'inspects the local SQLite file' } : {};
+let pgSchemaCounter = 0;
+async function pgFixture(connectionString: string) {
+  const schema = `t_${process.pid}_${++pgSchemaCounter}_${Date.now() % 100000}`;
+  const open = () => PgStore.open({ connectionString, schema, demoMode: true, ssl: false });
+  let pgStore = await open();
+  let app = createHttpApp(pgStore, { production: false });
+  let server: Server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  let base = `http://127.0.0.1:${(server!.address() as { port: number }).port}`;
+  const closeServer = () => new Promise<void>((resolve) => server.close(() => resolve()));
+  const request = async (path: string, init: RequestInit = {}) => fetch(base + path, init);
+  const login = async (email = 'admin@batra.demo') => {
+    const r = await request('/api/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ email, password: 'OxygenDemo!2026' }),
+    });
+    assert.equal(r.status, 200, await r.clone().text());
+    const cookie = r.headers.get('set-cookie')!.split(';')[0];
+    const body = await r.json();
+    return { cookie, csrf: body.csrfToken as string, body };
+  };
+  const restart = async () => {
+    await closeServer();
+    await pgStore.close();
+    pgStore = await open();
+    app = createHttpApp(pgStore, { production: false });
+    server = await new Promise((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    base = `http://127.0.0.1:${(server!.address() as { port: number }).port}`;
+  };
+  const dispose = async () => {
+    await closeServer();
+    await pgStore.close();
+    const pg = (await import('pg')).default;
+    const admin = new pg.Client({ connectionString });
+    await admin.connect();
+    await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+    await admin.end();
+  };
+  return {
+    request,
+    login,
+    restart,
+    dispose,
+    dbPath: '',
+    get store(): Store {
+      throw new Error('SQLite store is not available in the Postgres suite');
+    },
+    get base() {
+      return base;
+    },
+  };
+}
 
 async function fixture() {
+  if (pgUrl) return pgFixture(pgUrl);
   const dir = mkdtempSync(join(tmpdir(), 'batra-api-'));
   const dbPath = join(dir, 'store.sqlite');
   let app = createApp({ dbPath, demoMode: true });
@@ -91,8 +154,10 @@ test('login protects sessions, CSRF, and revocation', async () => {
       200,
     );
     assert.equal((await f.request('/api/bootstrap', { headers: { cookie } })).status, 401);
-    const dbBytes = readFileSync(f.dbPath);
-    assert.equal(dbBytes.includes(Buffer.from('OxygenDemo!2026')), false);
+    if (f.dbPath) {
+      const dbBytes = readFileSync(f.dbPath);
+      assert.equal(dbBytes.includes(Buffer.from('OxygenDemo!2026')), false);
+    }
   } finally {
     await f.dispose();
   }
@@ -238,7 +303,7 @@ test('admin changes revoke sessions and preserve final administrator', async () 
   }
 });
 
-test('audit is append only and backup restores a consistent snapshot', async () => {
+test('audit is append only and backup restores a consistent snapshot', sqliteOnly, async () => {
   const f = await fixture();
   try {
     const { cookie, csrf } = await f.login();
@@ -458,7 +523,7 @@ test('origin guard and CSV formula escaping protect downloads', async () => {
   }
 });
 
-test('production provisioning starts empty with one secure admin and refuses repeat', async () => {
+test('production provisioning starts empty with one secure admin and refuses repeat', sqliteOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'batra-live-'));
   const dbPath = join(dir, 'live.sqlite');
   try {
@@ -607,7 +672,7 @@ test('login rate limit counts password spray across different emails', async () 
   }
 });
 
-test('driver sees assigned pending pickups and current-day customer stock only', async () => {
+test('driver sees assigned pending pickups and current-day customer stock only', sqliteOnly, async () => {
   const f = await fixture();
   try {
     const { Store } = await import('../server/store.js');
@@ -745,7 +810,7 @@ test('driver cannot collect historical party cylinders without current assigned 
   }
 });
 
-test('restore includes committed pages still in the WAL', async () => {
+test('restore includes committed pages still in the WAL', sqliteOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'batra-wal-'));
   const dbPath = join(dir, 'source.sqlite'),
     restoredPath = join(dir, 'restored.sqlite');
@@ -798,7 +863,7 @@ test('driver can collect a customer cylinder on an active assigned route', async
   }
 });
 
-test('provisioned live administrator can commit an operational action', async () => {
+test('provisioned live administrator can commit an operational action', sqliteOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'batra-live-http-'));
   const dbPath = join(dir, 'live.sqlite');
   let server: Server | undefined;
@@ -1271,7 +1336,7 @@ test('credit correction commands enforce role, branch and available balance', as
   }
 });
 
-test('credit allocation and refund share one spendable note balance', async () => {
+test('credit allocation and refund share one spendable note balance', sqliteOnly, async () => {
   const f = await fixture();
   try {
     const state = f.store.getState('batra');
@@ -1394,7 +1459,7 @@ test('invalid new-user password returns a validation error without creating the 
   }
 });
 
-test('live database refuses to start in demo mode', async () => {
+test('live database refuses to start in demo mode', sqliteOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'batra-mode-'));
   const dbPath = join(dir, 'live.sqlite');
   try {
@@ -1470,7 +1535,7 @@ test('operations customer creation is visible immediately and after server resta
   }
 });
 
-test('restoring a snapshot invalidates sessions captured in that snapshot', async () => {
+test('restoring a snapshot invalidates sessions captured in that snapshot', sqliteOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'batra-restore-session-'));
   const dbPath = join(dir, 'source.sqlite');
   const backupPath = join(dir, 'backup.sqlite');
@@ -1492,7 +1557,7 @@ test('restoring a snapshot invalidates sessions captured in that snapshot', asyn
   }
 });
 
-test('demo startup does not seed into a partially initialized live database', async () => {
+test('demo startup does not seed into a partially initialized live database', sqliteOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'batra-partial-live-'));
   const dbPath = join(dir, 'live.sqlite');
   try {
@@ -1814,7 +1879,7 @@ test('delta action response contains scoped changes and a revision base', async 
   }
 });
 
-test('new database and snapshots are private, and idle sessions expire', async () => {
+test('new database and snapshots are private, and idle sessions expire', sqliteOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'batra-private-'));
   const dbPath = join(dir, 'source.sqlite');
   const backupPath = join(dir, 'backup.sqlite');

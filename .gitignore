@@ -7,3 +7,6 @@ data/
 *.log
 .DS_Store
 test-results/
+
+# Personal Claude Code notes
+CLAUDE.local.md
