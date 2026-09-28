@@ -257,6 +257,8 @@ export interface Bootstrap {
   csrfToken: string;
   state: AppState;
   users: User[];
+  // Names only, so every role can show who did something without seeing account details.
+  people?: { id: string; name: string }[];
 }
 export const ROLES: Role[] = ['admin', 'operations', 'quality', 'finance', 'driver', 'auditor'];
 export const GASES: Gas[] = ['Medical oxygen', 'Industrial oxygen'];

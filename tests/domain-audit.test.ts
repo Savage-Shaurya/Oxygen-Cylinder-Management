@@ -178,6 +178,48 @@ test('recall quarantines current batch gas and traces prior recipients', () => {
   );
 });
 
+test('recalled cylinder returned empty can clear the hold through recorded emptying', () => {
+  let s = seed();
+  s = run(s, 'batch.recall', { batchId: 'batch-1', reason: 'Failed potency' }, 'quality');
+  const held = s.cylinders.find((x) => x.id === 'c-002')!;
+  assert.equal(held.custody, 'customer');
+  s = run(s, 'cylinder.return', {
+    cylinderIds: [held.id],
+    partyId: held.custodianId,
+    contents: 'empty',
+  });
+  const returned = () => s.cylinders.find((x) => x.id === held.id)!;
+  assert.equal(returned().contents, 'empty');
+  assert.equal(returned().condition, 'quarantine');
+  const inspect = () =>
+    run(
+      s,
+      'cylinder.inspect',
+      { cylinderId: held.id, version: returned().version, condition: 'serviceable', notes: 'OK' },
+      'quality',
+    );
+  rejected(inspect, /Record emptying/);
+  s = run(
+    s,
+    'cylinder.empty',
+    { cylinderId: held.id, version: returned().version, method: 'evacuate', notes: 'Purged' },
+    'quality',
+  );
+  assert.equal(returned().batchId, undefined);
+  s = inspect();
+  assert.equal(returned().condition, 'serviceable');
+  rejected(
+    () =>
+      run(
+        s,
+        'cylinder.empty',
+        { cylinderId: held.id, version: returned().version, method: 'vent', notes: 'Again' },
+        'quality',
+      ),
+    /already empty/,
+  );
+});
+
 test('customer loss stays in custody and leaves rental running pending policy decision', () => {
   let s = seed();
   const c = s.cylinders.find((x) => x.id === 'c-001')!;

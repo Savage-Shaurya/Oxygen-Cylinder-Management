@@ -157,7 +157,21 @@ const opts = (items: { id: string; name: string }[]): Option[] =>
 const branch = (s: AppState, id: string) => s.branches.find((b) => b.id === id)?.name || id;
 const party = (s: AppState, id: string) =>
   id === 'company' ? 'Company owned' : s.parties.find((p) => p.id === id)?.name || id;
-const person = (users: User[], id: string) => users.find((u) => u.id === id)?.name || id;
+// Readable holder name; vehicle custody points at an order or a collection, not a party.
+const custodian = (s: AppState, c: Cylinder) => {
+  if (c.custody === 'plant') return branch(s, c.branchId);
+  if (c.custody === 'vehicle') {
+    const order = s.orders.find((o) => o.id === c.custodianId);
+    if (order) return `On vehicle ${order.vehicle || ''} · ${order.number}`.replace('  ', ' ');
+    const pickup = s.pickups?.find((p) => p.id === c.custodianId);
+    if (pickup) return `Collection vehicle ${pickup.vehicle} · ${party(s, pickup.partyId)}`;
+    return 'On vehicle';
+  }
+  return party(s, c.custodianId);
+};
+const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const person = (people: { id: string; name: string }[], id: string) =>
+  people.find((u) => u.id === id)?.name || id;
 const gasTone = (c: Cylinder) =>
   c.condition === 'serviceable' ? 'good' : c.condition === 'inspection_due' ? 'warn' : 'bad';
 const statusTone = (s: string): 'good' | 'warn' | 'bad' | 'neutral' | 'blue' =>
@@ -173,7 +187,9 @@ const statusTone = (s: string): 'good' | 'warn' | 'bad' | 'neutral' | 'blue' =>
 const display = (s: string) =>
   s === 'closed_short'
     ? 'Closed · short delivery'
-    : s.replaceAll('_', ' ').replace(/^./, (c) => c.toUpperCase());
+    : s === 'upi'
+      ? 'UPI'
+      : s.replaceAll('_', ' ').replace(/^./, (c) => c.toUpperCase());
 const age = (dateValue: string) =>
   Math.max(0, Math.floor((Date.now() - new Date(dateValue).getTime()) / 86400000));
 function parseCsv(input: string): string[][] {
@@ -379,7 +395,8 @@ export default function App() {
   if (!session) return <Login mode={serverMode} onSubmit={submitLogin} error={loginError} />;
   const s = session.state,
     u = session.user,
-    users = session.users;
+    users = session.users,
+    people = session.people ?? users;
   const financialRead = ['admin', 'finance', 'auditor'].includes(u.role);
   const availableBranches = s.branches.filter(
     (b) => u.role === 'admin' || u.branchIds.includes(b.id),
@@ -880,7 +897,7 @@ export default function App() {
     open({
       reload: { kind: 'dispatch', id: o.id },
       title: `Dispatch ${o.number}`,
-      subtitle: `${party(s, o.partyId)} · ${o.quantity} ${o.size} cylinders`,
+      subtitle: `${party(s, o.partyId)} · ${count(o.quantity, `${o.size} cylinder`)}`,
       submitLabel: 'Confirm dispatch',
       fields: [
         authorizationField,
@@ -906,7 +923,7 @@ export default function App() {
         const ids = v.cylinderIds as string[];
         if (!ids.length) throw new Error('Select at least one cylinder');
         if (ids.length !== o.quantity)
-          throw new Error(`Select exactly ${o.quantity} cylinders for this order`);
+          throw new Error(`Select exactly ${count(o.quantity, 'cylinder')} for this order`);
         await run('order.dispatch', {
           orderId: o.id,
           ownerAuthorizationRef: text(v.ownerAuthorizationRef),
@@ -2130,6 +2147,7 @@ export default function App() {
     production: (
       <Production
         s={s}
+        people={people}
         items={batches}
         search={search}
         setSearch={setSearch}
@@ -2377,6 +2395,7 @@ export default function App() {
           id={detail.id}
           s={s}
           users={users}
+          people={people}
           currentUser={u}
           onClose={() => setDetail(null)}
           actions={{
@@ -2718,7 +2737,7 @@ function Overview({
                     <WarningCircle size={18} />
                   </span>
                   <span className="row-primary">
-                    <strong>{e.type}</strong>
+                    <strong>{display(e.type)}</strong>
                     <small>{e.summary}</small>
                   </span>
                 </div>
@@ -2976,7 +2995,7 @@ function Cylinders({
       </div>
       <Card>
         <Toolbar search={search} setSearch={setSearch} placeholder="Search tag, serial, owner…">
-          <span className="results-count">{filtered.length} records</span>
+          <span className="results-count">{count(filtered.length, 'record')}</span>
         </Toolbar>
         <FilterPills
           value={filter}
@@ -3019,9 +3038,7 @@ function Cylinders({
                 </td>
                 <td>
                   <strong>{display(c.custody)}</strong>
-                  <small className="cell-sub">
-                    {c.custody === 'plant' ? branch(s, c.branchId) : party(s, c.custodianId)}
-                  </small>
+                  <small className="cell-sub">{custodian(s, c)}</small>
                 </td>
                 <td>
                   <Badge tone={c.contents === 'full' ? 'blue' : 'neutral'}>
@@ -3059,6 +3076,7 @@ function Cylinders({
 
 function Production({
   s,
+  people,
   items,
   search,
   setSearch,
@@ -3070,6 +3088,7 @@ function Production({
   canQuality,
 }: {
   s: AppState;
+  people: { id: string; name: string }[];
   items: Batch[];
   search: string;
   setSearch: (v: string) => void;
@@ -3126,7 +3145,7 @@ function Production({
           setSearch={setSearch}
           placeholder="Search batch, source, operator…"
         >
-          <span className="results-count">{filtered.length} batches</span>
+          <span className="results-count">{count(filtered.length, 'batch', 'batches')}</span>
         </Toolbar>
         {filtered.length ? (
           <Table
@@ -3153,7 +3172,7 @@ function Production({
                   <small className="cell-sub">{b.source}</small>
                 </td>
                 <td>{b.cylinderIds.length}</td>
-                <td>{b.fillOperator || b.operator}</td>
+                <td>{b.fillOperator || person(people, b.operator)}</td>
                 <td>{date(b.createdAt)}</td>
                 <td>
                   <Badge tone={statusTone(b.status)}>{display(b.status)}</Badge>
@@ -3300,7 +3319,7 @@ function Orders({
           setSearch={setSearch}
           placeholder="Search order, customer, vehicle…"
         >
-          <span className="results-count">{filtered.length} orders</span>
+          <span className="results-count">{count(filtered.length, 'order')}</span>
         </Toolbar>
         <FilterPills
           value={filter}
@@ -3432,7 +3451,7 @@ function Parties({
       />
       <Card>
         <Toolbar search={search} setSearch={setSearch} placeholder="Search name, phone, city…">
-          <span className="results-count">{filtered.length} customers</span>
+          <span className="results-count">{count(filtered.length, 'customer')}</span>
         </Toolbar>
         {filtered.length ? (
           <Table
@@ -3461,11 +3480,11 @@ function Parties({
                 </td>
                 <td>{p.city}</td>
                 <td>
-                  {
+                  {count(
                     s.cylinders.filter((c) => c.custody === 'customer' && c.custodianId === p.id)
-                      .length
-                  }{' '}
-                  cylinders
+                      .length,
+                    'cylinder',
+                  )}
                 </td>
                 {financialRead && <td>{money(p.dailyRentalPaise)}</td>}
                 <td>
@@ -3567,7 +3586,7 @@ function Suppliers({
       </div>
       <Card>
         <Toolbar search={search} setSearch={setSearch} placeholder="Search supplier or city…">
-          <span className="results-count">{filtered.length} suppliers</span>
+          <span className="results-count">{count(filtered.length, 'supplier')}</span>
         </Toolbar>
         {filtered.length ? (
           <Table headers={['Supplier', 'Contact', 'City', 'Cylinders held', 'Branch', 'Actions']}>
@@ -3742,7 +3761,7 @@ function Billing({
       )}
       <Card>
         <Toolbar search={search} setSearch={setSearch} placeholder="Search invoice or customer…">
-          <span className="results-count">{invoices.length} invoices</span>
+          <span className="results-count">{count(invoices.length, 'invoice')}</span>
         </Toolbar>
         <FilterPills
           value={filter}
@@ -3961,9 +3980,7 @@ function Safety({
                 </td>
                 <td>
                   {display(c.custody)}
-                  <small className="cell-sub">
-                    {c.custody === 'plant' ? branch(s, c.branchId) : party(s, c.custodianId)}
-                  </small>
+                  <small className="cell-sub">{custodian(s, c)}</small>
                 </td>
                 <td>{date(c.testDue)}</td>
                 <td>
@@ -4441,6 +4458,7 @@ function Detail({
   id,
   s,
   users,
+  people,
   currentUser,
   onClose,
   actions,
@@ -4450,6 +4468,7 @@ function Detail({
   id: string;
   s: AppState;
   users: User[];
+  people: { id: string; name: string }[];
   currentUser: User;
   onClose: () => void;
   actions: {
@@ -4525,7 +4544,7 @@ function Detail({
               </div>
               <div>
                 <dt>Current custodian</dt>
-                <dd>{c.custody === 'plant' ? branch(s, c.branchId) : party(s, c.custodianId)}</dd>
+                <dd>{custodian(s, c)}</dd>
               </div>
               <div>
                 <dt>Last test</dt>
@@ -4550,7 +4569,8 @@ function Detail({
               )}
               {permissions.inspect &&
                 c.custody === 'plant' &&
-                c.contents !== 'empty' &&
+                (c.contents !== 'empty' ||
+                  s.batches.some((b) => b.id === c.batchId && b.status === 'recalled')) &&
                 c.condition !== 'retired' &&
                 !s.batches.some((b) => b.id === c.batchId && b.status === 'awaiting_release') && (
                   <Button variant="secondary" onClick={() => actions.emptyCylinder(c)}>
@@ -4658,7 +4678,7 @@ function Detail({
               </div>
               <div>
                 <dt>Driver</dt>
-                <dd>{o.driverId ? person(users, o.driverId) : 'Not assigned'}</dd>
+                <dd>{o.driverId ? person(people, o.driverId) : 'Not assigned'}</dd>
               </div>
               <div>
                 <dt>Accepted</dt>
@@ -4760,8 +4780,8 @@ function Detail({
               <div>
                 <dt>Operator</dt>
                 <dd>
-                  {b.fillOperator || person(users, b.operator)}
-                  <small className="cell-sub">Recorded by {person(users, b.operator)}</small>
+                  {b.fillOperator || person(people, b.operator)}
+                  <small className="cell-sub">Recorded by {person(people, b.operator)}</small>
                 </dd>
               </div>
               <div>

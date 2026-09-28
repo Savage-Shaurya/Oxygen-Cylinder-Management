@@ -172,6 +172,9 @@ test('branch and driver views restrict records and finance', async () => {
     assert.equal(body.state.invoices.length, 0);
     assert.equal(body.state.receipts.length, 0);
     assert.equal(body.users.length, 0);
+    // Names only, so the driver sees "Driver" rather than an internal ID.
+    assert.ok(body.people.some((p: { id: string; name: string }) => p.id === 'u-driver'));
+    for (const person of body.people) assert.deepEqual(Object.keys(person).sort(), ['id', 'name']);
     const r = await f.request('/api/actions', {
       method: 'POST',
       headers: { cookie, 'x-csrf-token': csrf, origin: f.base, 'content-type': 'application/json' },

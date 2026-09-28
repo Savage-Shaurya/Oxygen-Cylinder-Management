@@ -603,14 +603,17 @@ function enforceCreditLimit(state: AppState, ctx: ActionContext, partyId: string
   if (ctx.user.role !== 'admin' || !overrideReason) fail('Customer credit limit exceeded; admin override reason required');
 }
 
+export function actionPermitted(type: string, role: Role): boolean {
+  return Object.hasOwn(access, type) && access[type].includes(role);
+}
+
 export function applyAction(
   input: AppState,
   request: ActionRequest,
   ctx: ActionContext,
 ): ActionResult {
   if (!ctx.user.active || !ctx.user.orgId) fail('Access denied', 403);
-  if (!Object.hasOwn(access, request.type) || !access[request.type].includes(ctx.user.role))
-    fail('Action not permitted', 403);
+  if (!actionPermitted(request.type, ctx.user.role)) fail('Action not permitted', 403);
   if (request.expectedRevision !== undefined && request.expectedRevision !== input.revision)
     fail('State changed; refresh and retry', 409);
   const parsed = schemas[request.type].safeParse(request.payload);
@@ -665,7 +668,9 @@ export function applyAction(
         c.batchId &&
         s.batches.find((batch) => batch.id === c.batchId)?.status === 'recalled'
       )
-        fail('Recalled cylinder remains on hold');
+        fail(
+          'Recalled cylinder remains on hold. Use Record emptying to clear the recalled gas, then inspect again.',
+        );
       if (p.condition === 'retired' && s.rentals.some((r) => r.cylinderId === c.id && !r.end))
         fail('Cannot retire active rental');
       if (p.condition === 'retired' && c.ownerId !== 'company' && !p.ownerAuthorizationRef)
@@ -695,7 +700,10 @@ export function applyAction(
       if (c.version !== p.version) fail('Cylinder version changed', 409);
       if (c.custody !== 'plant' || c.condition === 'retired')
         fail('Cylinder must be active at plant');
-      if (c.contents === 'empty') fail('Cylinder is already empty');
+      // An empty cylinder still linked to a recalled batch needs this record to clear the hold.
+      const recalledLink =
+        !!c.batchId && s.batches.find((b) => b.id === c.batchId)?.status === 'recalled';
+      if (c.contents === 'empty' && !recalledLink) fail('Cylinder is already empty');
       if (c.batchId && s.batches.find((b) => b.id === c.batchId)?.status === 'awaiting_release')
         fail('Reject cylinder from awaiting batch first');
       movement(s, ctx, c, 'empty', `plant:${c.branchId}`, c.id, `${p.method}: ${p.notes}`);
@@ -1167,7 +1175,10 @@ export function applyAction(
     case 'batch.release': {
       const b = object(s.batches, p.batchId, 'Batch', ctx, s);
       if (b.status !== 'awaiting_release') fail('Batch is not awaiting release');
-      if (b.operator === ctx.user.id) fail('Independent quality release required', 403);
+      if (b.operator === ctx.user.id) fail(
+          'You recorded this batch, so someone else must release it. Sign in as a Quality user to release it.',
+          403,
+        );
       const cs = cylinders(s, ctx, b.cylinderIds);
       for (const c of cs) {
         if (

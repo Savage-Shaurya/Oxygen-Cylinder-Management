@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { hashPassword, tokenHash, verifyPassword, type StoredUser } from './auth.js';
 import { createSeedState } from './seed.js';
-import { applyAction } from './domain.js';
+import { actionPermitted, applyAction } from './domain.js';
 import type {
   ActionRequest,
   ActionResult,
@@ -287,6 +287,9 @@ export class Store {
       payload: request.payload,
       expectedRevision: request.expectedRevision,
     });
+    // Role check first, so a blocked role never sees payload-specific validation errors.
+    if (!actionPermitted(request.type, user.role))
+      throw new StoreError('Action not permitted', 403);
     return this.transaction(() => {
       const old = this.getState(user.orgId);
       if (
@@ -397,15 +400,18 @@ export class Store {
       const state = this.getState(actor.orgId);
       if (input.branchIds?.some((id) => !actor.branchIds.includes(id)))
         throw new StoreError('Forbidden branch assignment', 403);
+      if (!input.name?.trim() || input.name.length > 120)
+        throw new StoreError('Enter a name of up to 120 characters');
+      if (!validEmail(input.email)) throw new StoreError('Enter a valid email address');
+      if (!validPassword(input.password))
+        throw new StoreError(
+          'Password must be 12–256 characters and contain a non-space character',
+        );
       if (
-        !input.name?.trim() ||
-        input.name.length > 120 ||
-        !validEmail(input.email) ||
-        !validPassword(input.password) ||
         !input.branchIds?.length ||
         input.branchIds.some((id) => !state.branches.some((b) => b.id === id))
       )
-        throw new StoreError('Invalid user');
+        throw new StoreError('Choose at least one branch');
       const user: StoredUser = {
         id: randomUUID(),
         orgId: actor.orgId,

@@ -303,6 +303,7 @@ export function createApp(options: StoreOptions = {}) {
               )
               .map((u) => ({ ...safeUser(u), email: '' }))
           : [],
+    people: store.getUsers(user.orgId).map((u) => ({ id: u.id, name: u.name })),
   });
   app.get('/api/health', (_req, res) =>
     res.json({ ok: true, mode: store.demoMode ? 'demo' : 'production' }),
