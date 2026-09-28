@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useRef, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import {
   ChartBar,
   CirclesFour,
@@ -45,6 +46,10 @@ import CylinderLabel from './CylinderLabel';
 import PrintChallan from './PrintChallan';
 import DemoWalkthrough from './DemoWalkthrough';
 import { queueDelivery, listQueuedDeliveries } from './offline';
+import { allowedPartyTypes } from './party-options';
+import { availableCredit, creditNoteAvailable, depositBalance } from '../shared/finance';
+import { downloadCylinderImportTemplate, CYLINDER_IMPORT_COLUMNS } from './import-template';
+import { decimalHundredths, invoiceBalance, unbilledOrder, rentalPeriod } from './finance-view';
 
 type View =
   | 'overview'
@@ -58,6 +63,7 @@ type View =
   | 'reports'
   | 'settings';
 type FormSpec = {
+  reload?: { kind: string; id?: string };
   title: string;
   subtitle?: string;
   fields: FormField[];
@@ -123,6 +129,13 @@ const datetime = (v?: string) =>
         timeZone: 'Asia/Kolkata',
       })
     : '—';
+const indiaDate = (at: string) =>
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(at));
 const today = () =>
   new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
@@ -136,7 +149,7 @@ const money = (p: number) =>
     currency: 'INR',
     maximumFractionDigits: 2,
   }).format(p / 100);
-const paise = (v: unknown) => Math.round(Number(v || 0) * 100);
+const paise = decimalHundredths;
 const text = (v: unknown) => String(v ?? '').trim();
 const num = (v: unknown) => Number(v || 0);
 const opts = (items: { id: string; name: string }[]): Option[] =>
@@ -163,7 +176,6 @@ const display = (s: string) =>
     : s.replaceAll('_', ' ').replace(/^./, (c) => c.toUpperCase());
 const age = (dateValue: string) =>
   Math.max(0, Math.floor((Date.now() - new Date(dateValue).getTime()) / 86400000));
-const withDate = (d: Date) => d.toISOString().slice(0, 10);
 function parseCsv(input: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [],
@@ -196,6 +208,13 @@ function parseCsv(input: string): string[][] {
 
 export default function App() {
   const [session, setSession] = useState<Bootstrap | null>(null);
+  const latestSession = useRef<Bootstrap | null>(null);
+  const factories = useRef<Record<string, (id?: string) => void>>({});
+  const captureSpec = useRef<{ active: boolean; spec: FormSpec | null }>({
+    active: false,
+    spec: null,
+  });
+  latestSession.current = session;
   const [loading, setLoading] = useState(true);
   const [loginError, setLoginError] = useState('');
   const [serverMode, setServerMode] = useState<'demo' | 'live'>('live');
@@ -235,6 +254,7 @@ export default function App() {
         setView(h);
         setSearch('');
         setFilter('all');
+        setDetail(null);
       }
     };
     window.addEventListener('hashchange', sync);
@@ -265,7 +285,14 @@ export default function App() {
       )
         return;
     }
-    await logout();
+    try {
+      await logout();
+    } catch {
+      setToast(
+        'Could not sign out on the server. Reconnect and try again. Your saved delivery evidence is retained.',
+      );
+      return;
+    }
     setSession(null);
     setDetail(null);
     location.hash = 'overview';
@@ -279,13 +306,52 @@ export default function App() {
     setDetail(null);
   }
   async function run(type: string, payload: Record<string, unknown>) {
-    if (!session) throw new Error('Session expired');
-    const result = await act(type, payload, session.state.revision);
-    setSession({ ...session, state: result.state });
-    setToast(result.message);
-    return result;
+    const current = latestSession.current;
+    if (!current) throw new Error('Session expired. Sign in again.');
+    payload = { ...payload };
+    for (const key of ['ownerAuthorizationRef', 'creditLimitOverrideReason', 'overrideReason']) {
+      if (typeof payload[key] === 'string' && !payload[key].trim()) delete payload[key];
+    }
+    try {
+      const result = await act(type, payload, undefined, current.state);
+      const updated = { ...current, state: result.state };
+      latestSession.current = updated;
+      setSession(updated);
+      setToast(result.message);
+      const destinations: Record<string, View> = {
+        'cylinder.register': 'cylinders',
+        'cylinders.import': 'cylinders',
+        'order.create': 'orders',
+        'batch.create': 'production',
+        'finance.invoice': 'billing',
+        'finance.rental': 'billing',
+        'finance.credit': 'billing',
+        'finance.deposit': 'billing',
+        'finance.refund': 'billing',
+        'finance.receipt': 'billing',
+        'finance.creditAllocate': 'billing',
+        'finance.creditRefund': 'billing',
+      };
+      if (destinations[type]) navigate(destinations[type]);
+      return result;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        try {
+          const refreshed = await bootstrap();
+          latestSession.current = refreshed;
+          setSession(refreshed);
+        } catch {
+          /* Keep entered values and the original error visible. */
+        }
+      }
+      throw error;
+    }
   }
   function open(spec: FormSpec) {
+    if (captureSpec.current.active) {
+      captureSpec.current.spec = spec;
+      return;
+    }
     setDetail(null);
     setForm(spec);
   }
@@ -337,7 +403,7 @@ export default function App() {
       .filter((i) => i.type !== 'credit' && i.status !== 'paid' && i.status !== 'credited')
       .map((i) => ({
         id: i.id,
-        name: `${i.number} · ${i.billTo?.name || party(s, i.partyId)} · ${money(i.totalPaise - i.paidPaise)} due`,
+        name: `${i.number} · ${i.billTo?.name || party(s, i.partyId)} · ${money(invoiceBalance(i))} due`,
       })),
   );
   const recordOptions = (list: Cylinder[]) =>
@@ -358,6 +424,108 @@ export default function App() {
     required: true,
     hint: 'Amount in ₹',
   });
+  const authorizationField: FormField = {
+    name: 'ownerAuthorizationRef',
+    label: 'Owner permission reference',
+    hint: 'Required for third-party-owned cylinders. Record the owner’s permission for this specific work.',
+    type: 'text',
+  };
+  const creditOverrideFields: FormField[] =
+    u.role === 'admin'
+      ? [
+          {
+            name: 'creditLimitOverrideReason',
+            label: 'Credit-limit exception reason',
+            hint: 'Leave blank unless deliberately approving an amount above the customer limit.',
+            type: 'textarea',
+          },
+        ]
+      : [];
+  function stopIncidentRent(c: Cylinder) {
+    open({
+      title: `Approve rental stop · ${c.tag}`,
+      warning:
+        'This ends rent on the selected date. Already billed days cannot be silently removed.',
+      submitLabel: 'Approve rental stop',
+      fields: [
+        {
+          name: 'stopDate',
+          label: 'Rental stop date',
+          type: 'date',
+          required: true,
+          value: today(),
+        },
+        { name: 'reason', label: 'Approval reason', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('rental.stopIncident', { cylinderId: c.id, version: c.version, ...v });
+      },
+    });
+  }
+  function writeOff(c: Cylinder) {
+    open({
+      title: `Write off lost cylinder · ${c.tag}`,
+      warning:
+        'This retires the lost asset, closes its loss investigation and stops its rent. It does not pretend that the cylinder returned to the plant.',
+      submitLabel: 'Approve writeoff',
+      fields: [
+        {
+          name: 'stopDate',
+          label: 'Rental stop date',
+          type: 'date',
+          required: true,
+          value: today(),
+        },
+        authorizationField,
+        { name: 'reason', label: 'Writeoff approval reason', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('cylinder.writeoff', { cylinderId: c.id, version: c.version, ...v });
+      },
+    });
+  }
+  function reverseCollection() {
+    const pickups = (s.pickups || []).filter((p) =>
+      p.cylinderIds.some(
+        (id) =>
+          !p.receivedIds.includes(id) &&
+          cylinders.some((c) => c.id === id && c.custody === 'vehicle' && c.custodianId === p.id),
+      ),
+    );
+    open({
+      title: 'Undo collection',
+      subtitle:
+        'Correct only cylinders still on the pickup vehicle. Plant receipts cannot be undone here.',
+      submitLabel: 'Undo selected collection',
+      fields: [
+        {
+          name: 'pickupId',
+          label: 'Collection',
+          type: 'select',
+          required: true,
+          options: pickups.map((p) => ({
+            value: p.id,
+            label: `${party(s, p.partyId)} · ${p.vehicle} · ${datetime(p.createdAt)}`,
+          })),
+        },
+        {
+          name: 'cylinderIds',
+          label: 'Cylinders to return to customer custody',
+          type: 'multiselect',
+          required: true,
+          options: (v) =>
+            recordOptions(
+              cylinders.filter((c) => c.custody === 'vehicle' && c.custodianId === v.pickupId),
+            ),
+          span: 'full',
+        },
+        { name: 'reason', label: 'Correction reason', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('collection.reverse', v);
+      },
+    });
+  }
   function register() {
     open({
       title: 'Register cylinder',
@@ -369,7 +537,16 @@ export default function App() {
         { name: 'manufacturer', label: 'Manufacturer', required: true },
         { name: 'gas', label: 'Gas service', type: 'select', required: true, options: gasOptions },
         { name: 'size', label: 'Cylinder size', required: true, placeholder: 'e.g. B or D' },
-        { name: 'ownerId', label: 'Owner', type: 'select', required: true, options: ownerOptions },
+        {
+          name: 'ownerId',
+          label: 'Owner',
+          type: 'select',
+          required: true,
+          options: (v) => [
+            { value: 'company', label: 'Company owned' },
+            ...opts(parties.filter((p) => p.branchId === v.branchId)),
+          ],
+        },
         ...baseFields,
         {
           name: 'contents',
@@ -398,8 +575,81 @@ export default function App() {
       },
     });
   }
+  function emptyCylinder(c: Cylinder) {
+    open({
+      reload: { kind: 'emptyCylinder', id: c.id },
+      title: `Record emptying · ${c.tag}`,
+      subtitle:
+        'Record work already performed by trained staff. The cylinder remains subject to inspection and recall holds.',
+      submitLabel: 'Record emptying',
+      fields: [
+        {
+          name: 'method',
+          label: 'Method used',
+          type: 'select',
+          required: true,
+          options: [
+            { value: 'vent', label: 'Venting' },
+            { value: 'evacuate', label: 'Evacuation' },
+          ],
+        },
+        { name: 'notes', label: 'Work record / evidence', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('cylinder.empty', { cylinderId: c.id, version: c.version, ...v });
+      },
+    });
+  }
+  function offsiteIncident(c: Cylinder) {
+    open({
+      reload: { kind: 'offsiteIncident', id: c.id },
+      title: `Report incident · ${c.tag}`,
+      warning:
+        'This records the incident and holds the cylinder without changing physical custody. Rental continues until plant receipt under the current policy.',
+      submitLabel: 'Record incident',
+      fields: [
+        {
+          name: 'kind',
+          label: 'Incident',
+          type: 'select',
+          required: true,
+          options: [
+            { value: 'lost', label: 'Lost' },
+            { value: 'damaged', label: 'Damaged' },
+          ],
+        },
+        { name: 'notes', label: 'Incident details / evidence', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('cylinder.offsiteIncident', { cylinderId: c.id, version: c.version, ...v });
+      },
+    });
+  }
+  function rejectBatchCylinder(b: Batch) {
+    open({
+      reload: { kind: 'rejectBatchCylinder', id: b.id },
+      title: `Reject member · ${b.number}`,
+      subtitle:
+        'Exclude the failed cylinder from release. Its history and quality hold are retained.',
+      submitLabel: 'Reject cylinder',
+      fields: [
+        {
+          name: 'cylinderId',
+          label: 'Cylinder',
+          type: 'select',
+          required: true,
+          options: recordOptions(cylinders.filter((c) => b.cylinderIds.includes(c.id))),
+        },
+        { name: 'reason', label: 'Rejection reason', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('batch.reject', { batchId: b.id, ...v });
+      },
+    });
+  }
   function inspect(c: Cylinder) {
     open({
+      reload: { kind: 'inspect', id: c.id },
       title: `Inspect ${c.tag}`,
       subtitle: `Serial ${c.serial} · version ${c.version}`,
       submitLabel: 'Record inspection',
@@ -410,6 +660,7 @@ export default function App() {
         certificate: c.certificate,
       },
       fields: [
+        authorizationField,
         {
           name: 'condition',
           label: 'Inspection outcome',
@@ -420,9 +671,9 @@ export default function App() {
             label: display(x),
           })),
         },
-        { name: 'lastTest', label: 'Last test date', type: 'date' },
-        { name: 'testDue', label: 'Next test due', type: 'date' },
-        { name: 'certificate', label: 'Certificate reference' },
+        { name: 'lastTest', label: 'Last test date', type: 'date', required: true },
+        { name: 'testDue', label: 'Next test due', type: 'date', required: true },
+        { name: 'certificate', label: 'Certificate reference', required: true },
         {
           name: 'notes',
           label: 'Inspection notes',
@@ -443,6 +694,7 @@ export default function App() {
   }
   function retag(c: Cylinder) {
     open({
+      reload: { kind: 'retag', id: c.id },
       title: `Replace tag · ${c.tag}`,
       subtitle: 'The cylinder identity and its history stay intact.',
       fields: [
@@ -459,15 +711,21 @@ export default function App() {
       },
     });
   }
-  function partyFields(type?: Party['type']): FormField[] {
+  function partyFields(type?: Party['type'], editing = false): FormField[] {
     return [
-      { name: 'name', label: 'Business / customer name', required: true },
+      {
+        name: 'name',
+        label: type === 'supplier' ? 'Supplier business name' : 'Business / customer name',
+        required: true,
+      },
       {
         name: 'type',
         label: 'Party type',
         type: 'select',
         required: true,
-        options: ['hospital', 'homecare', 'industrial', 'supplier'].map((x) => ({
+        options: allowedPartyTypes(
+          editing ? 'edit' : type === 'supplier' ? 'supplier' : 'customer',
+        ).map((x) => ({
           value: x,
           label: display(x),
         })),
@@ -486,6 +744,7 @@ export default function App() {
         label: 'Rental free days',
         type: 'number',
         min: 0,
+        max: 365,
         step: 1,
         required: true,
         value: 0,
@@ -514,12 +773,18 @@ export default function App() {
       subtitle: 'Set custody and commercial terms for future work.',
       fields: partyFields(type),
       submit: async (v) => {
+        const expectedTypes = allowedPartyTypes(type === 'supplier' ? 'supplier' : 'customer');
+        if (!expectedTypes.includes(v.type as Party['type']))
+          throw new Error('Choose a valid type for this form.');
         await run('party.create', normalizeParty(v));
+        navigate(type === 'supplier' ? 'suppliers' : 'customers');
+        setToast(`${type === 'supplier' ? 'Supplier' : 'Customer'} created: ${text(v.name)}`);
       },
     });
   }
   function editParty(p: Party) {
     open({
+      reload: { kind: 'editParty', id: p.id },
       title: `Edit ${p.name}`,
       initial: {
         ...p,
@@ -527,16 +792,21 @@ export default function App() {
         dailyRentalPaise: p.dailyRentalPaise / 100,
         depositPaise: p.depositPaise / 100,
       },
-      fields: partyFields(p.type),
+      fields: partyFields(p.type, true),
       submit: async (v) => {
-        await run('party.update', { partyId: p.id, ...normalizeParty(v) });
+        await run('party.update', {
+          partyId: p.id,
+          expectedVersion: p.version ?? 1,
+          ...normalizeParty(v),
+        });
       },
     });
   }
   function createOrder() {
     open({
       title: 'New order',
-      subtitle: 'A specific cylinder manifest is selected when the order is dispatched.',
+      subtitle:
+        'A specific cylinder manifest is selected at dispatch. Finance reviews and approves the final gas price when invoicing.',
       fields: [
         {
           name: 'partyId',
@@ -557,7 +827,15 @@ export default function App() {
         },
         { name: 'gas', label: 'Gas', type: 'select', options: gasOptions, required: true },
         { name: 'size', label: 'Cylinder size', required: true, placeholder: 'e.g. B or D' },
-        { name: 'quantity', label: 'Quantity', type: 'number', min: 1, step: 1, required: true },
+        {
+          name: 'quantity',
+          label: 'Quantity',
+          type: 'number',
+          min: 1,
+          max: 500,
+          step: 1,
+          required: true,
+        },
         {
           name: 'priority',
           label: 'Priority',
@@ -570,7 +848,7 @@ export default function App() {
           value: 'normal',
         },
         { name: 'dueDate', label: 'Requested date', type: 'date', required: true, value: today() },
-        priceField('unitPricePaise', 'Gas price per cylinder'),
+        ...(financialRead ? [priceField('unitPricePaise', 'Gas price per cylinder')] : []),
         { name: 'notes', label: 'Order notes', type: 'textarea', span: 'full' },
       ],
       submit: async (v) => {
@@ -590,6 +868,9 @@ export default function App() {
         c.gas === o.gas &&
         c.size === o.size &&
         c.custody === 'plant' &&
+        (c.ownerId === 'company' ||
+          c.ownerId === o.partyId ||
+          s.parties.some((p) => p.id === c.ownerId && p.type === 'supplier')) &&
         c.contents === 'full' &&
         c.condition === 'serviceable' &&
         c.testDue >= today() &&
@@ -597,10 +878,12 @@ export default function App() {
         batches.some((b) => b.id === c.batchId && b.status === 'released'),
     );
     open({
+      reload: { kind: 'dispatch', id: o.id },
       title: `Dispatch ${o.number}`,
       subtitle: `${party(s, o.partyId)} · ${o.quantity} ${o.size} cylinders`,
       submitLabel: 'Confirm dispatch',
       fields: [
+        authorizationField,
         {
           name: 'cylinderIds',
           label: 'Scan or select exact cylinders',
@@ -626,6 +909,7 @@ export default function App() {
           throw new Error(`Select exactly ${o.quantity} cylinders for this order`);
         await run('order.dispatch', {
           orderId: o.id,
+          ownerAuthorizationRef: text(v.ownerAuthorizationRef),
           cylinderIds: ids,
           vehicle: text(v.vehicle),
           driverId: v.driverId,
@@ -638,6 +922,7 @@ export default function App() {
       (id) => !o.deliveredIds.includes(id) && !o.unloadedIds?.includes(id),
     );
     open({
+      reload: { kind: 'deliver', id: o.id },
       title: `Record delivery · ${o.number}`,
       subtitle:
         'Select only the units accepted by the recipient. You can complete a partial delivery.',
@@ -670,16 +955,12 @@ export default function App() {
         onSubmit: async (v) => {
           if (!(v.cylinderIds as string[]).length || !text(v.recipient))
             throw new Error('Select accepted cylinders and enter the recipient');
-          await queueDelivery(
-            u.id,
-            {
-              orderId: o.id,
-              cylinderIds: v.cylinderIds,
-              recipient: text(v.recipient),
-              notes: text(v.notes),
-            },
-            s.revision,
-          );
+          await queueDelivery(u.id, {
+            orderId: o.id,
+            cylinderIds: v.cylinderIds,
+            recipient: text(v.recipient),
+            notes: text(v.notes),
+          });
           setToast('Delivery evidence saved on this device. Sync when connected.');
         },
       },
@@ -690,6 +971,7 @@ export default function App() {
       (id) => !o.deliveredIds.includes(id) && !o.unloadedIds?.includes(id),
     );
     open({
+      reload: { kind: 'unload', id: o.id },
       title: `Unload remaining stock · ${o.number}`,
       subtitle: 'Return undelivered vehicle stock to the plant.',
       fields: [
@@ -698,14 +980,37 @@ export default function App() {
           label: 'Cylinders returned to plant',
           type: 'multiselect',
           required: true,
-          options: recordOptions(cylinders.filter((c) => remaining.includes(c.id))),
+          options: (v) =>
+            recordOptions(
+              cylinders.filter(
+                (c) =>
+                  remaining.includes(c.id) &&
+                  (v.sealIntact !== 'true' ||
+                    (c.contents === 'full' &&
+                      c.condition === 'serviceable' &&
+                      c.testDue >= today() &&
+                      s.batches.some((b) => b.id === c.batchId && b.status === 'released'))),
+              ),
+            ),
           span: 'full',
+        },
+        {
+          name: 'sealIntact',
+          label: 'Seal checked on every selected cylinder',
+          type: 'select',
+          required: true,
+          value: 'false',
+          options: [
+            { value: 'false', label: 'Not verified — hold for inspection' },
+            { value: 'true', label: 'All seals intact — retain released stock' },
+          ],
         },
         { name: 'notes', label: 'Reason / handover notes', type: 'textarea', required: true },
       ],
       submit: async (v) => {
         if (!(v.cylinderIds as string[]).length) throw new Error('Select at least one cylinder');
         await run('order.unload', {
+          sealIntact: v.sealIntact === 'true',
           orderId: o.id,
           cylinderIds: v.cylinderIds,
           notes: text(v.notes),
@@ -723,10 +1028,13 @@ export default function App() {
               o.partyId === c.custodianId &&
               o.driverId === u.id &&
               (['dispatched', 'partial'].includes(o.status) ||
-                (o.status === 'delivered' && o.deliveredAt?.slice(0, 10) === today())),
+                (o.status === 'delivered' &&
+                  o.deliveredAt &&
+                  indiaDate(o.deliveredAt) === today())),
           )),
     );
     open({
+      reload: { kind: 'collectReturns' },
       title: 'Collect empties',
       subtitle:
         'Record the exact cylinders picked up from a customer. Plant receiving confirms them separately.',
@@ -793,11 +1101,10 @@ export default function App() {
       (c) =>
         (c.custody === 'customer' ||
           (c.custody === 'vehicle' && s.pickups?.some((x) => x.cylinderIds.includes(c.id)))) &&
-        (!p ||
-          c.custodianId === p.id ||
-          s.pickups?.some((x) => x.partyId === p.id && x.cylinderIds.includes(c.id))),
+        true,
     );
     open({
+      reload: { kind: 'receiveReturn', id: p?.id },
       title: 'Receive customer returns',
       subtitle: 'Confirm every physical cylinder received at the plant.',
       fields: [
@@ -830,6 +1137,19 @@ export default function App() {
           span: 'full',
         },
         {
+          name: 'receivingBranchId',
+          label: 'Receiving branch',
+          hint: 'A different receiving branch is supported for company-owned cylinders only. Third-party stock must return to its owning branch.',
+          type: 'select',
+          required: true,
+          options: branchOptions,
+          value: p?.branchId,
+          defaultOnChange: {
+            dependsOn: ['partyId'],
+            value: (v) => customerParties.find((p) => p.id === v.partyId)?.branchId || '',
+          },
+        },
+        {
           name: 'contents',
           label: 'Contents on return',
           type: 'select',
@@ -846,6 +1166,7 @@ export default function App() {
         if (!(v.cylinderIds as string[]).length) throw new Error('Select returned cylinders');
         await run('cylinder.return', {
           partyId: v.partyId,
+          receivingBranchId: v.receivingBranchId,
           cylinderIds: v.cylinderIds,
           contents: v.contents,
           notes: text(v.notes),
@@ -863,6 +1184,7 @@ export default function App() {
         !batches.some((b) => b.status === 'awaiting_release' && b.cylinderIds.includes(c.id)),
     );
     open({
+      reload: { kind: 'createBatch' },
       title: 'Create fill batch',
       subtitle: 'Select inspected empty cylinders. Quality must release the completed batch.',
       fields: [
@@ -888,6 +1210,7 @@ export default function App() {
   }
   function release(b: Batch) {
     open({
+      reload: { kind: 'release', id: b.id },
       title: `Release ${b.number}`,
       subtitle: 'Independent quality review makes this stock eligible for dispatch.',
       submitLabel: 'Release batch',
@@ -906,9 +1229,10 @@ export default function App() {
   }
   function recall(b: Batch) {
     open({
+      reload: { kind: 'recall', id: b.id },
       title: `Recall ${b.number}`,
       warning:
-        'This places every linked cylinder on hold, including cylinders already with customers.',
+        'This holds cylinders still carrying this batch and records its past customer recipients for follow-up.',
       submitLabel: 'Recall batch',
       fields: [{ name: 'reason', label: 'Recall reason', type: 'textarea', required: true }],
       submit: async (v) => {
@@ -918,12 +1242,29 @@ export default function App() {
   }
   function supplierSend() {
     const eligible = cylinders.filter(
-      (c) => c.custody === 'plant' && c.contents === 'empty' && c.condition !== 'retired',
+      (c) =>
+        c.custody === 'plant' &&
+        c.contents === 'empty' &&
+        ['serviceable', 'inspection_due', 'testing'].includes(c.condition) &&
+        (!c.batchId || s.batches.some((b) => b.id === c.batchId && b.status === 'recalled')),
     );
     open({
+      reload: { kind: 'supplierSend' },
       title: 'Send to supplier',
       subtitle: 'Record exactly which cylinders leave plant custody.',
       fields: [
+        authorizationField,
+        {
+          name: 'service',
+          label: 'Service required',
+          type: 'select',
+          required: true,
+          value: 'fill',
+          options: [
+            { value: 'fill', label: 'Refill' },
+            { value: 'test', label: 'Hydrotest / inspection' },
+          ],
+        },
         {
           name: 'supplierId',
           label: 'Supplier',
@@ -939,7 +1280,15 @@ export default function App() {
           options: (v) =>
             recordOptions(
               eligible.filter(
-                (c) => c.branchId === suppliers.find((p) => p.id === v.supplierId)?.branchId,
+                (c) =>
+                  c.branchId === suppliers.find((p) => p.id === v.supplierId)?.branchId &&
+                  (v.service === 'test' ||
+                    (c.condition === 'serviceable' &&
+                      c.testDue >= today() &&
+                      !!c.lastTest &&
+                      c.lastTest <= today() &&
+                      c.lastTest <= c.testDue &&
+                      !!c.certificate)),
               ),
             ),
           span: 'full',
@@ -956,8 +1305,10 @@ export default function App() {
   function supplierReceive() {
     const held = cylinders.filter((c) => c.custody === 'supplier');
     open({
+      reload: { kind: 'supplierReceive' },
       title: 'Receive from supplier',
-      subtitle: 'Received filled cylinders enter a quality hold until release.',
+      subtitle:
+        'Record the service performed and actual contents. Filled stock requires quality release.',
       fields: [
         {
           name: 'supplierId',
@@ -971,10 +1322,34 @@ export default function App() {
           label: 'Received cylinder tags',
           type: 'multiselect',
           required: true,
-          options: (v) => recordOptions(held.filter((c) => c.custodianId === v.supplierId)),
+          options: (v) =>
+            recordOptions(
+              held.filter((c) => c.custodianId === v.supplierId && (!v.gas || c.gas === v.gas)),
+            ),
           span: 'full',
         },
         { name: 'gas', label: 'Gas', type: 'select', required: true, options: gasOptions },
+        {
+          name: 'service',
+          label: 'Service performed',
+          type: 'select',
+          required: true,
+          options: [
+            { value: 'fill', label: 'Refill' },
+            { value: 'test', label: 'Test / inspection only' },
+          ],
+        },
+        {
+          name: 'contents',
+          label: 'Actual contents received',
+          type: 'select',
+          required: true,
+          options: (v) =>
+            (v.service === 'fill' ? ['full'] : ['empty', 'partial', 'unknown']).map((value) => ({
+              value,
+              label: display(value),
+            })),
+        },
         { name: 'reference', label: 'Supplier delivery reference', required: true },
         { name: 'notes', label: 'Receiving notes', type: 'textarea' },
       ],
@@ -1062,9 +1437,19 @@ export default function App() {
 
   function issueInvoice(o: Order) {
     open({
+      reload: { kind: 'issueInvoice', id: o.id },
       title: `Invoice ${o.number}`,
-      subtitle: `Gas charges for ${o.deliveredIds.length} accepted cylinder${o.deliveredIds.length === 1 ? '' : 's'}.`,
+      subtitle: `Review the price for ${o.deliveredIds.length} accepted cylinder${o.deliveredIds.length === 1 ? '' : 's'}. Current subtotal: ${money(o.deliveredIds.length * o.unitPricePaise)}.`,
       fields: [
+        ...creditOverrideFields,
+        {
+          ...priceField(
+            'unitPricePaise',
+            'Approved gas price per cylinder',
+            o.unitPricePaise / 100,
+          ),
+          min: 0.01,
+        },
         {
           name: 'taxBps',
           label: 'Tax rate (%)',
@@ -1081,7 +1466,11 @@ export default function App() {
       submit: async (v) => {
         await run('finance.invoice', {
           orderId: o.id,
-          taxBps: Math.round(num(v.taxBps) * 100),
+          ...(v.creditLimitOverrideReason
+            ? { creditLimitOverrideReason: text(v.creditLimitOverrideReason) }
+            : {}),
+          unitPricePaise: paise(v.unitPricePaise),
+          taxBps: paise(v.taxBps),
           dueDate: v.dueDate,
           notes: text(v.notes),
         });
@@ -1089,12 +1478,12 @@ export default function App() {
     });
   }
   function rentalInvoice() {
-    const previous = new Date();
-    previous.setMonth(previous.getMonth() - 1);
+    const period = rentalPeriod(today(), s.invoices);
     open({
       title: 'Generate rental invoice',
       subtitle: 'Charges derive from recorded customer custody and the agreed free days.',
       fields: [
+        ...creditOverrideFields,
         {
           name: 'partyId',
           label: 'Customer',
@@ -1107,9 +1496,19 @@ export default function App() {
           label: 'Period start',
           type: 'date',
           required: true,
-          value: withDate(previous),
+          value: period.start,
+          defaultOnChange: {
+            dependsOn: ['partyId'],
+            value: (v) => rentalPeriod(today(), s.invoices, String(v.partyId)).start,
+          },
         },
-        { name: 'periodEnd', label: 'Period end', type: 'date', required: true, value: today() },
+        {
+          name: 'periodEnd',
+          label: 'Period end (latest yesterday)',
+          type: 'date',
+          required: true,
+          value: period.end,
+        },
         {
           name: 'taxBps',
           label: 'Tax rate (%)',
@@ -1123,7 +1522,7 @@ export default function App() {
         { name: 'dueDate', label: 'Payment due', type: 'date', required: true, value: today() },
       ],
       submit: async (v) => {
-        await run('finance.rental', { ...v, taxBps: Math.round(num(v.taxBps) * 100) });
+        await run('finance.rental', { ...v, taxBps: paise(v.taxBps) });
       },
     });
   }
@@ -1140,7 +1539,7 @@ export default function App() {
           options: invoiceOptions,
           value: i?.id,
         },
-        priceField('amountPaise', 'Amount received'),
+        { ...priceField('amountPaise', 'Amount received'), min: 0.01 },
         {
           name: 'method',
           label: 'Method',
@@ -1164,6 +1563,16 @@ export default function App() {
     open({
       title: kind === 'deposit' ? 'Record security deposit' : 'Refund security deposit',
       fields: [
+        ...(kind === 'refund' && u.role === 'admin'
+          ? [
+              {
+                name: 'overrideReason',
+                label: 'Liability exception approval',
+                type: 'textarea' as const,
+                hint: 'Only administrators may approve a deposit refund while cylinders or unpaid invoices remain. Leave blank for the normal check.',
+              },
+            ]
+          : []),
         {
           name: 'partyId',
           label: 'Customer',
@@ -1171,7 +1580,7 @@ export default function App() {
           required: true,
           options: partyOptions,
         },
-        priceField('amountPaise', 'Amount'),
+        { ...priceField('amountPaise', 'Amount'), min: 0.01 },
         {
           name: 'method',
           label: 'Method',
@@ -1187,6 +1596,7 @@ export default function App() {
       submit: async (v) => {
         await run(`finance.${kind}`, {
           partyId: v.partyId,
+          ...(v.overrideReason ? { overrideReason: text(v.overrideReason) } : {}),
           amountPaise: paise(v.amountPaise),
           method: v.method,
           reference: text(v.reference),
@@ -1197,11 +1607,140 @@ export default function App() {
   }
   function credit(i: Invoice) {
     open({
+      reload: { kind: 'credit', id: i.id },
       title: `Credit ${i.number}`,
-      warning: 'A full credit preserves the original invoice and links a correction document.',
-      fields: [{ name: 'reason', label: 'Reason for credit', type: 'textarea', required: true }],
+      warning:
+        'A credit note corrects all or part of this bill. Only an overpaid amount becomes spendable or refundable customer credit.',
+      submitLabel: 'Issue credit note',
+      fields: [
+        {
+          ...priceField(
+            'amountPaise',
+            'Credit amount',
+            (i.totalPaise - (i.creditedPaise || 0)) / 100,
+          ),
+          min: 0.01,
+        },
+        { name: 'reason', label: 'Reason for credit', type: 'textarea', required: true },
+      ],
       submit: async (v) => {
-        await run('finance.credit', { invoiceId: i.id, reason: text(v.reason) });
+        await run('finance.credit', {
+          invoiceId: i.id,
+          amountPaise: paise(v.amountPaise),
+          reason: text(v.reason),
+        });
+      },
+    });
+  }
+  function allocateCredit() {
+    open({
+      title: 'Apply customer credit',
+      subtitle: 'Use available credit against an unpaid invoice for the same customer.',
+      submitLabel: 'Apply credit',
+      fields: [
+        {
+          name: 'creditInvoiceId',
+          label: 'Credit note',
+          type: 'select',
+          required: true,
+          options: s.invoices
+            .filter((i) => i.type === 'credit' && creditNoteAvailable(s, i.id) > 0)
+            .map((i) => ({
+              value: i.id,
+              label: `${i.number} · ${party(s, i.partyId)} · ${money(creditNoteAvailable(s, i.id))} available`,
+            })),
+        },
+        {
+          name: 'invoiceId',
+          label: 'Invoice to settle',
+          type: 'select',
+          required: true,
+          options: (v) =>
+            invoiceOptions.filter(
+              (o) =>
+                s.invoices.find((i) => i.id === o.value)?.partyId ===
+                s.invoices.find((i) => i.id === v.creditInvoiceId)?.partyId,
+            ),
+        },
+        { ...priceField('amountPaise', 'Amount to apply'), min: 0.01 },
+        { name: 'reason', label: 'Allocation reason', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('finance.creditAllocate', { ...v, amountPaise: paise(v.amountPaise) });
+      },
+    });
+  }
+  function unallocateCredit() {
+    open({
+      title: 'Undo credit allocation',
+      subtitle: 'Return an applied credit to its credit note before correcting the target invoice.',
+      submitLabel: 'Undo allocation',
+      fields: [
+        {
+          name: 'receiptId',
+          label: 'Credit allocation',
+          type: 'select',
+          required: true,
+          options: s.receipts
+            .filter((r) => r.kind === 'credit_allocation' && !r.reversedAt)
+            .map((r) => ({ value: r.id, label: `${r.number} · ${money(r.amountPaise)}` })),
+        },
+        { name: 'reason', label: 'Reversal reason', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('finance.creditUnallocate', v);
+      },
+    });
+  }
+  function refundCredit() {
+    open({
+      title: 'Refund customer credit',
+      subtitle: 'Refund only the unused customer credit created by corrections to paid bills.',
+      submitLabel: 'Record credit refund',
+      fields: [
+        {
+          name: 'partyId',
+          label: 'Customer',
+          type: 'select',
+          required: true,
+          options: customerParties
+            .filter((p) => availableCredit(s, p.id) > 0)
+            .map((p) => ({
+              value: p.id,
+              label: `${p.name} · ${money(availableCredit(s, p.id))} available`,
+            })),
+        },
+        {
+          name: 'creditInvoiceId',
+          label: 'Credit note to refund',
+          type: 'select',
+          required: true,
+          options: (v) =>
+            s.invoices
+              .filter(
+                (i) =>
+                  i.type === 'credit' &&
+                  i.partyId === v.partyId &&
+                  creditNoteAvailable(s, i.id) > 0,
+              )
+              .map((i) => ({
+                value: i.id,
+                label: `${i.number} · ${money(creditNoteAvailable(s, i.id))} available`,
+              })),
+        },
+        { ...priceField('amountPaise', 'Refund amount'), min: 0.01 },
+        {
+          name: 'method',
+          label: 'Method',
+          type: 'select',
+          required: true,
+          options: ['cash', 'upi', 'bank'].map((value) => ({ value, label: display(value) })),
+        },
+        { name: 'reference', label: 'Refund transaction reference', required: true },
+        { name: 'reason', label: 'Refund reason', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('finance.creditRefund', { ...v, amountPaise: paise(v.amountPaise) });
       },
     });
   }
@@ -1218,9 +1757,21 @@ export default function App() {
   }
   function settingsForm() {
     open({
+      reload: { kind: 'settingsForm' },
       title: 'Company settings',
       initial: { ...s.settings, defaultTaxBps: s.settings.defaultTaxBps / 100 },
       fields: [
+        {
+          name: 'supplierOwnedRental',
+          label: 'Rent for supplier-owned cylinders',
+          type: 'select',
+          required: true,
+          value: s.settings.supplierOwnedRental || 'charge',
+          options: [
+            { value: 'charge', label: 'Charge the customer’s agreed rental rate' },
+            { value: 'no_charge', label: 'Do not charge rental on supplier-owned cylinders' },
+          ],
+        },
         { name: 'companyName', label: 'Company name', required: true },
         { name: 'address', label: 'Business address', type: 'textarea', required: true },
         { name: 'gstin', label: 'GSTIN' },
@@ -1236,11 +1787,62 @@ export default function App() {
       ],
       submit: async (v) => {
         await run('settings.update', {
+          expectedVersion: s.settings.version ?? 1,
+          supplierOwnedRental: text(v.supplierOwnedRental),
           companyName: text(v.companyName),
           address: text(v.address),
           gstin: text(v.gstin),
-          defaultTaxBps: Math.round(num(v.defaultTaxBps) * 100),
+          defaultTaxBps: paise(v.defaultTaxBps),
         });
+      },
+    });
+  }
+  function changePassword() {
+    open({
+      title: 'Change your password',
+      subtitle: 'All your sessions will end. Sign in again with your new password.',
+      submitLabel: 'Change password',
+      fields: [
+        { name: 'currentPassword', label: 'Current password', type: 'password', required: true },
+        {
+          name: 'newPassword',
+          label: 'New password',
+          type: 'password',
+          required: true,
+          minLength: 12,
+          hint: 'At least 12 characters; not only spaces.',
+        },
+      ],
+      submit: async (v) => {
+        await request('/api/password', { method: 'POST', body: JSON.stringify(v) });
+        setSession(null);
+        latestSession.current = null;
+        setDetail(null);
+      },
+    });
+  }
+  function resetPassword(target: User) {
+    open({
+      title: `Reset password · ${target.name}`,
+      subtitle:
+        'The member will be signed out of every session. Share the replacement password through your approved secure channel.',
+      submitLabel: 'Reset member password',
+      fields: [
+        {
+          name: 'newPassword',
+          label: 'Replacement password',
+          type: 'password',
+          required: true,
+          minLength: 12,
+          hint: 'At least 12 characters; not only spaces.',
+        },
+      ],
+      submit: async (v) => {
+        await request(`/api/users/${target.id}/password`, {
+          method: 'POST',
+          body: JSON.stringify(v),
+        });
+        setToast('Password reset. Member sessions have ended.');
       },
     });
   }
@@ -1251,7 +1853,14 @@ export default function App() {
       fields: [
         { name: 'name', label: 'Full name', required: true },
         { name: 'email', label: 'Email', type: 'email', required: true },
-        { name: 'password', label: 'Temporary password', type: 'password', required: true },
+        {
+          name: 'password',
+          label: 'Temporary password',
+          type: 'password',
+          required: true,
+          minLength: 12,
+          hint: 'At least 12 characters; not only spaces.',
+        },
         {
           name: 'role',
           label: 'Role',
@@ -1327,6 +1936,7 @@ export default function App() {
   function cancelOrder(o: Order) {
     open({
       title: `Cancel ${o.number}`,
+      submitLabel: 'Confirm cancellation',
       fields: [{ name: 'reason', label: 'Cancellation reason', type: 'textarea', required: true }],
       submit: async (v) => {
         await run('order.cancel', { orderId: o.id, reason: text(v.reason) });
@@ -1371,18 +1981,14 @@ export default function App() {
         if (!contents.trim()) throw new Error('Choose a CSV file or paste CSV data');
         const parsed = parseCsv(contents);
         const headers = parsed.shift()?.map((x) => x.trim()) || [];
-        const needed = [
-          'serial',
-          'tag',
-          'manufacturer',
-          'gas',
-          'size',
-          'ownerId',
-          'branchId',
-          'testDue',
-          'lastTest',
-          'certificate',
-        ];
+        const needed: readonly string[] = CYLINDER_IMPORT_COLUMNS;
+        if (
+          new Set(headers).size !== headers.length ||
+          headers.some((h) => !needed.includes(h) && h !== 'contents')
+        )
+          throw new Error(
+            'CSV contains duplicate or unsupported columns. Use the listed import columns.',
+          );
         if (needed.some((x) => !headers.includes(x)))
           throw new Error(`CSV needs columns: ${needed.join(', ')}`);
         if (parsed.length > 500) throw new Error('Maximum 500 cylinders per import');
@@ -1398,6 +2004,99 @@ export default function App() {
     });
   }
 
+  factories.current = {
+    inspect: (id) => {
+      const x = cylinders.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      inspect(x);
+    },
+    retag: (id) => {
+      const x = cylinders.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      retag(x);
+    },
+    emptyCylinder: (id) => {
+      const x = cylinders.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      emptyCylinder(x);
+    },
+    offsiteIncident: (id) => {
+      const x = cylinders.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      offsiteIncident(x);
+    },
+    rejectBatchCylinder: (id) => {
+      const x = batches.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      rejectBatchCylinder(x);
+    },
+    editParty: (id) => {
+      const x = parties.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      editParty(x);
+    },
+    dispatch: (id) => {
+      const x = orders.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      dispatch(x);
+    },
+    deliver: (id) => {
+      const x = orders.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      deliver(x);
+    },
+    unload: (id) => {
+      const x = orders.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      unload(x);
+    },
+    receiveReturn: (id) => receiveReturn(parties.find((p) => p.id === id)),
+    createBatch,
+    supplierSend,
+    supplierReceive,
+    issueInvoice: (id) => {
+      const x = orders.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      issueInvoice(x);
+    },
+    settingsForm,
+    collectReturns,
+    reverseCollection,
+    release: (id) => {
+      const x = batches.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      release(x);
+    },
+    recall: (id) => {
+      const x = batches.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      recall(x);
+    },
+    credit: (id) => {
+      const x = s.invoices.find((x) => x.id === id);
+      if (!x) throw new Error('Record no longer available');
+      credit(x);
+    },
+  };
+  async function reloadForm() {
+    if (!form?.reload) throw new Error('Close and reopen this form to reload it.');
+    const descriptor = form.reload;
+    const refreshed = await bootstrap();
+    latestSession.current = refreshed;
+    flushSync(() => setSession(refreshed));
+    captureSpec.current = { active: true, spec: null };
+    try {
+      factories.current[descriptor.kind]?.(descriptor.id);
+    } finally {
+      captureSpec.current.active = false;
+    }
+    const next = captureSpec.current.spec;
+    if (!next)
+      throw new Error('This action is no longer available. Close this form and check the record.');
+    const resetValues = ['editParty', 'settingsForm'].includes(descriptor.kind);
+    setForm(next);
+    return { ...next, onSubmit: next.submit, resetValues };
+  }
   const viewContent: Record<View, ReactNode> = {
     overview: (
       <Overview
@@ -1423,6 +2122,7 @@ export default function App() {
         retag={retag}
         exportCsv={() => safeExport('/api/cylinders.csv')}
         importCsv={importCsv}
+        canExport={u.role !== 'driver'}
         canWrite={allowed('admin', 'operations')}
         canInspect={allowed('admin', 'quality')}
       />
@@ -1457,6 +2157,7 @@ export default function App() {
         unload={unload}
         receiveReturn={() => receiveReturn()}
         collectReturns={collectReturns}
+        reverseCollection={reverseCollection}
         reportDiscrepancy={reportDiscrepancy}
         cancelOrder={cancelOrder}
         canOperate={allowed('admin', 'operations')}
@@ -1477,6 +2178,7 @@ export default function App() {
         canAdd={allowed('admin', 'operations', 'finance')}
         canEdit={allowed('admin', 'finance')}
         financialRead={financialRead}
+        canReturn={allowed('admin', 'operations')}
         receiveReturn={receiveReturn}
       />
     ),
@@ -1509,6 +2211,9 @@ export default function App() {
         receipt={receipt}
         deposit={deposit}
         credit={credit}
+        unallocateCredit={unallocateCredit}
+        allocateCredit={allocateCredit}
+        refundCredit={refundCredit}
         canFinance={allowed('admin', 'finance')}
       />
     ) : (
@@ -1536,6 +2241,7 @@ export default function App() {
         exportJson={() => safeExport('/api/export')}
         exportCsv={() => safeExport('/api/cylinders.csv')}
         canExport={allowed('admin', 'auditor')}
+        canCsv={u.role !== 'driver'}
       />
     ),
     settings: (
@@ -1546,6 +2252,8 @@ export default function App() {
         editSettings={settingsForm}
         addUser={addUser}
         editUser={editUser}
+        changePassword={changePassword}
+        resetPassword={resetPassword}
         canAdmin={allowed('admin')}
         financialRead={financialRead}
       />
@@ -1592,6 +2300,7 @@ export default function App() {
                     key={n.id}
                     onClick={() => navigate(n.id)}
                     className={`nav-item ${view === n.id ? 'active' : ''}`}
+                    aria-current={view === n.id ? 'page' : undefined}
                   >
                     <n.icon size={19} weight={view === n.id ? 'fill' : 'regular'} />
                     <span>{n.label}</span>
@@ -1650,11 +2359,18 @@ export default function App() {
           </div>
         </header>
         <main className="content">
-          <OfflinePanel user={u} onSynced={async () => setSession(await bootstrap())} />
+          <OfflinePanel state={s} user={u} onSynced={async () => setSession(await bootstrap())} />
           {viewContent[view]}
         </main>
       </div>
-      {form && <ActionForm {...form} onClose={() => setForm(null)} onSubmit={form.submit} />}
+      {form && (
+        <ActionForm
+          {...form}
+          onClose={() => setForm(null)}
+          onSubmit={form.submit}
+          onReloadLatest={form.reload ? reloadForm : undefined}
+        />
+      )}
       {detail && (
         <Detail
           kind={detail.kind}
@@ -1665,6 +2381,11 @@ export default function App() {
           onClose={() => setDetail(null)}
           actions={{
             inspect,
+            emptyCylinder,
+            offsiteIncident,
+            stopIncidentRent,
+            writeOff,
+            rejectBatchCylinder,
             retag,
             dispatch,
             deliver,
@@ -1688,7 +2409,7 @@ export default function App() {
       )}
       {toast && (
         <div className="toast" role="status">
-          <CheckCircle size={18} />
+          <span aria-hidden="true">•</span>
           {toast}
           <button aria-label="Dismiss" onClick={() => setToast('')}>
             <X size={16} />
@@ -2135,6 +2856,7 @@ function FilterPills({
         <button
           key={x.value}
           className={value === x.value ? 'selected' : ''}
+          aria-pressed={value === x.value}
           onClick={() => onChange(x.value)}
         >
           {x.label}
@@ -2176,6 +2898,7 @@ function Cylinders({
   exportCsv,
   importCsv,
   canWrite,
+  canExport,
   canInspect,
 }: {
   s: AppState;
@@ -2191,15 +2914,22 @@ function Cylinders({
   exportCsv: () => void;
   importCsv: () => void;
   canWrite: boolean;
+  canExport: boolean;
   canInspect: boolean;
 }) {
   const filtered = items.filter((c) => {
     const q = search.toLowerCase();
     return (
       (!q ||
-        [c.serial, c.tag, c.manufacturer, c.gas, c.size, party(s, c.ownerId)].some((x) =>
-          x.toLowerCase().includes(q),
-        )) &&
+        [
+          c.serial,
+          c.tag,
+          ...(c.previousTags || []),
+          c.manufacturer,
+          c.gas,
+          c.size,
+          party(s, c.ownerId),
+        ].some((x) => x.toLowerCase().includes(q))) &&
       (filter === 'all' || filter === c.custody || filter === c.condition)
     );
   });
@@ -2212,13 +2942,20 @@ function Cylinders({
         actions={
           <>
             {canWrite && (
+              <Button variant="secondary" onClick={downloadCylinderImportTemplate}>
+                Download import template
+              </Button>
+            )}
+            {canWrite && (
               <Button variant="secondary" onClick={importCsv}>
                 <UploadSimple size={16} /> Import CSV
               </Button>
             )}
-            <Button variant="secondary" onClick={exportCsv}>
-              <DownloadSimple size={16} /> Export CSV
-            </Button>
+            {canExport && (
+              <Button variant="secondary" onClick={exportCsv}>
+                <DownloadSimple size={16} /> Export CSV
+              </Button>
+            )}
             {canWrite && (
               <Button onClick={register}>
                 <Plus size={16} /> Register cylinder
@@ -2298,8 +3035,12 @@ function Cylinders({
                 <td>
                   <div className="row-actions">
                     <button onClick={() => showDetail(c.id)}>Details</button>
-                    {canInspect && <button onClick={() => inspect(c)}>Inspect</button>}
-                    {canWrite && <button onClick={() => retag(c)}>Retag</button>}
+                    {canInspect && c.custody === 'plant' && c.condition !== 'retired' && (
+                      <button onClick={() => inspect(c)}>Inspect</button>
+                    )}
+                    {canWrite && c.custody === 'plant' && (
+                      <button onClick={() => retag(c)}>Retag</button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -2340,7 +3081,7 @@ function Production({
   canQuality: boolean;
 }) {
   const filtered = items.filter((b) =>
-    [b.number, b.gas, b.source, b.operator].some((x) =>
+    [b.number, b.gas, b.source, b.fillOperator || '', b.operator].some((x) =>
       x.toLowerCase().includes(search.toLowerCase()),
     ),
   );
@@ -2412,7 +3153,7 @@ function Production({
                   <small className="cell-sub">{b.source}</small>
                 </td>
                 <td>{b.cylinderIds.length}</td>
-                <td>{b.operator}</td>
+                <td>{b.fillOperator || b.operator}</td>
                 <td>{date(b.createdAt)}</td>
                 <td>
                   <Badge tone={statusTone(b.status)}>{display(b.status)}</Badge>
@@ -2458,6 +3199,7 @@ function Orders({
   unload,
   receiveReturn,
   collectReturns,
+  reverseCollection,
   reportDiscrepancy,
   cancelOrder,
   canOperate,
@@ -2478,6 +3220,7 @@ function Orders({
   unload: (o: Order) => void;
   receiveReturn: () => void;
   collectReturns: () => void;
+  reverseCollection: () => void;
   reportDiscrepancy: () => void;
   cancelOrder: (o: Order) => void;
   canOperate: boolean;
@@ -2499,6 +3242,11 @@ function Orders({
         description="Pick exact cylinders, record partial acceptance and reconcile the vehicle."
         actions={
           <>
+            {canOperate && (
+              <Button variant="secondary" onClick={reverseCollection}>
+                Undo collection
+              </Button>
+            )}
             {canOperate && (
               <Button variant="secondary" onClick={receiveReturn}>
                 <ArrowClockwise size={16} /> Receive returns
@@ -2572,7 +3320,11 @@ function Orders({
             {filtered.map((o) => (
               <tr key={o.id}>
                 <td>
-                  <button className="table-link" onClick={() => showDetail(o.id)}>
+                  <button
+                    className="table-link"
+                    aria-label={`Open ${o.number} details and actions`}
+                    onClick={() => showDetail(o.id)}
+                  >
                     {o.number}
                   </button>
                   <small className="cell-sub">
@@ -2642,6 +3394,7 @@ function Parties({
   canAdd,
   canEdit,
   financialRead,
+  canReturn,
   receiveReturn,
 }: {
   s: AppState;
@@ -2655,6 +3408,7 @@ function Parties({
   canAdd: boolean;
   canEdit: boolean;
   financialRead: boolean;
+  canReturn: boolean;
   receiveReturn: (p?: Party) => void;
 }) {
   const filtered = items.filter((p) =>
@@ -2718,7 +3472,7 @@ function Parties({
                   <div className="row-actions">
                     <button onClick={() => showDetail(p.id)}>Details</button>
                     {canEdit && <button onClick={() => edit(p)}>Edit</button>}
-                    {canAdd && <button onClick={() => receiveReturn(p)}>Return</button>}
+                    {canReturn && <button onClick={() => receiveReturn(p)}>Return</button>}
                   </div>
                 </td>
               </tr>
@@ -2783,7 +3537,7 @@ function Suppliers({
             )}
             {canOperate && (
               <Button variant="secondary" onClick={receive}>
-                Receive filled
+                Receive from supplier
               </Button>
             )}
             {canOperate && (
@@ -2807,11 +3561,7 @@ function Suppliers({
         />
         <Stat
           label="Received awaiting QC"
-          value={
-            s.batches.filter(
-              (b) => b.status === 'awaiting_release' && b.source.toLowerCase().includes('supplier'),
-            ).length
-          }
+          value={s.batches.filter((b) => b.status === 'awaiting_release' && b.supplierId).length}
           tone="warn"
         />
       </div>
@@ -2874,6 +3624,9 @@ function Billing({
   receipt,
   deposit,
   credit,
+  allocateCredit,
+  unallocateCredit,
+  refundCredit,
   canFinance,
 }: {
   s: AppState;
@@ -2887,6 +3640,9 @@ function Billing({
   receipt: (i?: Invoice) => void;
   deposit: (kind: 'deposit' | 'refund') => void;
   credit: (i: Invoice) => void;
+  allocateCredit: () => void;
+  unallocateCredit: () => void;
+  refundCredit: () => void;
   canFinance: boolean;
 }) {
   const invoices = s.invoices.filter(
@@ -2899,12 +3655,12 @@ function Billing({
     uninvoiced = s.orders.filter(
       (o) =>
         o.deliveredIds.length > 0 &&
-        !s.invoices.some((i) => i.type === 'gas' && i.sourceId === o.id) &&
-        o.status !== 'cancelled',
+        unbilledOrder(s.invoices, o.id) &&
+        ['delivered', 'closed_short'].includes(o.status),
     );
   const outstanding = s.invoices
     .filter((i) => i.type !== 'credit' && i.status !== 'credited')
-    .reduce((n, i) => n + i.totalPaise - i.paidPaise, 0);
+    .reduce((n, i) => n + invoiceBalance(i), 0);
   return (
     <>
       <PageHeader
@@ -2913,6 +3669,22 @@ function Billing({
         description="Issue documents from accepted deliveries, charge custody and allocate receipts."
         actions={
           <>
+            {canFinance && (
+              <Button variant="secondary" onClick={allocateCredit}>
+                Apply credit
+              </Button>
+            )}
+            {canFinance && (
+              <Button variant="secondary" onClick={refundCredit}>
+                Refund credit
+              </Button>
+            )}
+            {canFinance &&
+              s.receipts.some((r) => r.kind === 'credit_allocation' && !r.reversedAt) && (
+                <Button variant="secondary" onClick={unallocateCredit}>
+                  Undo credit allocation
+                </Button>
+              )}
             {canFinance && (
               <Button variant="secondary" onClick={() => deposit('deposit')}>
                 Record deposit
@@ -2937,7 +3709,10 @@ function Billing({
         }
       />
       <div className="summary-strip">
-        <Stat label="Invoices issued" value={s.invoices.length} />
+        <Stat
+          label="Invoices issued"
+          value={s.invoices.filter((i) => i.type !== 'credit').length}
+        />
         <Stat label="Outstanding" value={money(outstanding)} tone="warn" />
         <Stat label="Receipts" value={s.receipts.length} />
         <Stat label="Unbilled deliveries" value={uninvoiced.length} />
@@ -2972,10 +3747,12 @@ function Billing({
         <FilterPills
           value={filter}
           onChange={setFilter}
-          items={['all', 'gas', 'rental', 'credit', 'issued', 'partial', 'paid'].map((x) => ({
-            value: x,
-            label: display(x),
-          }))}
+          items={['all', 'gas', 'rental', 'credit', 'issued', 'partial', 'paid', 'credited'].map(
+            (x) => ({
+              value: x,
+              label: display(x),
+            }),
+          )}
         />
         {invoices.length ? (
           <Table
@@ -2998,15 +3775,17 @@ function Billing({
                   </button>
                 </td>
                 <td>{i.billTo?.name || party(s, i.partyId)}</td>
-                <td>{display(i.type)}</td>
+                <td>{i.type === 'credit' ? 'Credit note' : display(i.type)}</td>
                 <td>
                   {date(i.issuedAt)}
-                  <small className="cell-sub">Due {date(i.dueDate)}</small>
+                  {i.type !== 'credit' && <small className="cell-sub">Due {date(i.dueDate)}</small>}
                 </td>
                 <td>{money(i.totalPaise)}</td>
-                <td>{money(i.totalPaise - i.paidPaise)}</td>
+                <td>{money(invoiceBalance(i))}</td>
                 <td>
-                  <Badge tone={statusTone(i.status)}>{display(i.status)}</Badge>
+                  <Badge tone={statusTone(i.status)}>
+                    {i.type === 'credit' ? 'Credit recorded' : display(i.status)}
+                  </Badge>
                 </td>
                 <td>
                   <div className="row-actions">
@@ -3017,8 +3796,8 @@ function Billing({
                         <button onClick={() => receipt(i)}>Payment</button>
                       )}
                     {canFinance &&
-                      i.status === 'issued' &&
-                      i.paidPaise === 0 &&
+                      i.status !== 'credited' &&
+                      (i.creditedPaise || 0) < i.totalPaise &&
                       i.type !== 'credit' && <button onClick={() => credit(i)}>Credit</button>}
                   </div>
                 </td>
@@ -3035,18 +3814,71 @@ function Billing({
       <Card className="ledger-card">
         <div className="section-heading">
           <div>
+            <div className="eyebrow">Customer account</div>
+            <h2>Balances and deposits</h2>
+          </div>
+        </div>
+        <Table
+          headers={[
+            'Customer',
+            'Unpaid invoices',
+            'Available credit',
+            'Deposit held',
+            'Cylinders held',
+          ]}
+        >
+          {s.parties
+            .filter((p) => p.type !== 'supplier')
+            .map((p) => (
+              <tr key={p.id}>
+                <td>{p.name}</td>
+                <td>
+                  {money(
+                    s.invoices
+                      .filter((i) => i.partyId === p.id)
+                      .reduce((n, i) => n + invoiceBalance(i), 0),
+                  )}
+                </td>
+                <td>{money(availableCredit(s, p.id))}</td>
+                <td>{money(depositBalance(s, p.id))}</td>
+                <td>
+                  {
+                    s.cylinders.filter((c) => c.custody === 'customer' && c.custodianId === p.id)
+                      .length
+                  }
+                </td>
+              </tr>
+            ))}
+        </Table>
+      </Card>
+      <Card className="ledger-card">
+        <div className="section-heading">
+          <div>
             <div className="eyebrow">Cash record</div>
-            <h2>Recent receipts & deposits</h2>
+            <h2>Receipts & deposits · newest first</h2>
           </div>
         </div>
         {s.receipts.length ? (
           <Table headers={['Receipt', 'Party', 'Kind', 'Method', 'Amount', 'Date']}>
-            {s.receipts.slice(0, 12).map((r) => (
+            {[...s.receipts].reverse().map((r) => (
               <tr key={r.id}>
                 <td>{r.number}</td>
                 <td>{party(s, r.partyId)}</td>
                 <td>
-                  <Badge tone={r.kind === 'refund' ? 'warn' : 'good'}>{display(r.kind)}</Badge>
+                  <Badge
+                    tone={
+                      r.reversedAt || r.kind === 'refund' || r.kind === 'credit_refund'
+                        ? 'warn'
+                        : 'good'
+                    }
+                  >
+                    {r.reversedAt ? 'Reversed allocation' : display(r.kind)}
+                  </Badge>
+                  {r.reversedAt && (
+                    <small className="cell-sub">
+                      {r.reversalReason} · {date(r.reversedAt)}
+                    </small>
+                  )}
                 </td>
                 <td>
                   {r.method.toUpperCase()}
@@ -3137,7 +3969,7 @@ function Safety({
                 <td>
                   <div className="row-actions">
                     <button onClick={() => showCylinder(c.id)}>History</button>
-                    {canInspect && c.condition !== 'retired' && (
+                    {canInspect && c.custody === 'plant' && c.condition !== 'retired' && (
                       <button onClick={() => inspect(c)}>Inspect</button>
                     )}
                   </div>
@@ -3223,11 +4055,13 @@ function Reports({
   exportJson,
   exportCsv,
   canExport,
+  canCsv,
 }: {
   s: AppState;
   exportJson: () => void;
   exportCsv: () => void;
   canExport: boolean;
+  canCsv: boolean;
 }) {
   const [tab, setTab] = useState<'stock' | 'movement' | 'audit'>('stock'),
     [query, setQuery] = useState('');
@@ -3259,9 +4093,11 @@ function Reports({
                 <DownloadSimple size={16} /> Full JSON export
               </Button>
             )}
-            <Button variant="secondary" onClick={exportCsv}>
-              <DownloadSimple size={16} /> Cylinder CSV
-            </Button>
+            {canCsv && (
+              <Button variant="secondary" onClick={exportCsv}>
+                <DownloadSimple size={16} /> Cylinder CSV
+              </Button>
+            )}
           </>
         }
       />
@@ -3280,6 +4116,28 @@ function Reports({
           ].map((t) => (
             <button
               role="tab"
+              id={`report-tab-${t.id}`}
+              aria-controls={`report-panel-${t.id}`}
+              tabIndex={tab === t.id ? 0 : -1}
+              onKeyDown={(event) => {
+                const ids = ['stock', 'movement', 'audit'] as const;
+                const index = ids.indexOf(tab);
+                const next =
+                  event.key === 'ArrowRight'
+                    ? (index + 1) % 3
+                    : event.key === 'ArrowLeft'
+                      ? (index + 2) % 3
+                      : event.key === 'Home'
+                        ? 0
+                        : event.key === 'End'
+                          ? 2
+                          : -1;
+                if (next >= 0) {
+                  event.preventDefault();
+                  setTab(ids[next]);
+                  document.getElementById(`report-tab-${ids[next]}`)?.focus();
+                }
+              }}
               aria-selected={tab === t.id}
               key={t.id}
               className={tab === t.id ? 'active' : ''}
@@ -3289,126 +4147,137 @@ function Reports({
             </button>
           ))}
         </div>
-        {tab === 'stock' && (
-          <>
-            {grouped.length ? (
-              <Table
-                headers={[
-                  'Branch',
-                  'Gas',
-                  'Total',
-                  'Plant',
-                  'Vehicle',
-                  'Customer',
-                  'Supplier',
-                  'On hold',
-                ]}
-              >
-                {grouped.map((g, i) => (
-                  <tr key={i}>
-                    <td>{g.branch}</td>
-                    <td>{g.gas}</td>
-                    <td>
-                      <strong>{g.total}</strong>
-                    </td>
-                    <td>{g.plant}</td>
-                    <td>{g.vehicle}</td>
-                    <td>{g.customer}</td>
-                    <td>{g.supplier}</td>
-                    <td>{g.hold}</td>
-                  </tr>
-                ))}
-              </Table>
-            ) : (
-              <Empty
-                title="No stock data"
-                description="Registered cylinders will appear in this report."
-              />
-            )}
-          </>
-        )}
-        {tab === 'movement' && (
-          <>
-            <Toolbar
-              search={query}
-              setSearch={setQuery}
-              placeholder="Search cylinder, action, reference…"
-            />
-            {s.movements.filter((m) =>
-              [m.cylinderId, m.action, m.reference, m.actorName].some((x) =>
-                x.toLowerCase().includes(query.toLowerCase()),
-              ),
-            ).length ? (
-              <Table headers={['When', 'Cylinder', 'Movement', 'From → to', 'Actor', 'Reference']}>
-                {s.movements
-                  .filter((m) =>
-                    [m.cylinderId, m.action, m.reference, m.actorName].some((x) =>
-                      x.toLowerCase().includes(query.toLowerCase()),
-                    ),
-                  )
-                  .slice(0, 200)
-                  .map((m) => (
-                    <tr key={m.id}>
-                      <td>{datetime(m.at)}</td>
-                      <td>{s.cylinders.find((c) => c.id === m.cylinderId)?.tag || m.cylinderId}</td>
-                      <td>{display(m.action)}</td>
+        <div role="tabpanel" id={`report-panel-${tab}`} aria-labelledby={`report-tab-${tab}`}>
+          {tab === 'stock' && (
+            <>
+              {grouped.length ? (
+                <Table
+                  headers={[
+                    'Branch',
+                    'Gas',
+                    'Total',
+                    'Plant',
+                    'Vehicle',
+                    'Customer',
+                    'Supplier',
+                    'On hold',
+                  ]}
+                >
+                  {grouped.map((g, i) => (
+                    <tr key={i}>
+                      <td>{g.branch}</td>
+                      <td>{g.gas}</td>
                       <td>
-                        {m.from} → {m.to}
+                        <strong>{g.total}</strong>
                       </td>
-                      <td>{m.actorName}</td>
-                      <td>
-                        {m.reference}
-                        <small className="cell-sub">{m.notes}</small>
-                      </td>
+                      <td>{g.plant}</td>
+                      <td>{g.vehicle}</td>
+                      <td>{g.customer}</td>
+                      <td>{g.supplier}</td>
+                      <td>{g.hold}</td>
                     </tr>
                   ))}
-              </Table>
-            ) : (
-              <Empty
-                title="No movements found"
-                description="Serial movements appear after work is recorded."
+                </Table>
+              ) : (
+                <Empty
+                  title="No stock data"
+                  description="Registered cylinders will appear in this report."
+                />
+              )}
+            </>
+          )}
+          {tab === 'movement' && (
+            <>
+              <Toolbar
+                search={query}
+                setSearch={setQuery}
+                placeholder="Search cylinder, action, reference…"
               />
-            )}
-          </>
-        )}
-        {tab === 'audit' && (
-          <>
-            <Toolbar
-              search={query}
-              setSearch={setQuery}
-              placeholder="Search action, actor, record…"
-            />
-            {s.audit.filter((a) =>
-              [a.action, a.actorName, a.entityId, a.summary].some((x) =>
-                x.toLowerCase().includes(query.toLowerCase()),
-              ),
-            ).length ? (
-              <Table headers={['When', 'Actor', 'Action', 'Record', 'Summary']}>
-                {s.audit
-                  .filter((a) =>
-                    [a.action, a.actorName, a.entityId, a.summary].some((x) =>
-                      x.toLowerCase().includes(query.toLowerCase()),
-                    ),
-                  )
-                  .slice(0, 200)
-                  .map((a) => (
-                    <tr key={a.id}>
-                      <td>{datetime(a.at)}</td>
-                      <td>{a.actorName}</td>
-                      <td>{display(a.action)}</td>
-                      <td>{a.entityId}</td>
-                      <td>{a.summary}</td>
-                    </tr>
-                  ))}
-              </Table>
-            ) : (
-              <Empty
-                title="No audit events found"
-                description="Every saved action appears in the audit trail."
+              {s.movements.filter((m) =>
+                [m.cylinderId, m.action, m.reference, m.actorName].some((x) =>
+                  x.toLowerCase().includes(query.toLowerCase()),
+                ),
+              ).length ? (
+                <Table
+                  headers={['When', 'Cylinder', 'Movement', 'From → to', 'Actor', 'Reference']}
+                >
+                  {s.movements
+                    .filter((m) =>
+                      [m.cylinderId, m.action, m.reference, m.actorName].some((x) =>
+                        x.toLowerCase().includes(query.toLowerCase()),
+                      ),
+                    )
+                    .slice(0, 200)
+                    .map((m) => (
+                      <tr key={m.id}>
+                        <td>{datetime(m.at)}</td>
+                        <td>
+                          {s.cylinders.find((c) => c.id === m.cylinderId)?.tag || m.cylinderId}
+                        </td>
+                        <td>{display(m.action)}</td>
+                        <td>
+                          {m.from} → {m.to}
+                        </td>
+                        <td>{m.actorName}</td>
+                        <td>
+                          {m.reference}
+                          <small className="cell-sub">{m.notes}</small>
+                        </td>
+                      </tr>
+                    ))}
+                </Table>
+              ) : (
+                <Empty
+                  title="No movements found"
+                  description="Serial movements appear after work is recorded."
+                />
+              )}
+            </>
+          )}
+          {tab === 'audit' && (
+            <>
+              {!canExport && (
+                <p className="muted pad">
+                  Audit records are available to administrators and auditors.
+                </p>
+              )}
+              <Toolbar
+                search={query}
+                setSearch={setQuery}
+                placeholder="Search action, actor, record…"
               />
-            )}
-          </>
-        )}
+              {s.audit.filter((a) =>
+                [a.action, a.actorName, a.entityId, a.summary].some((x) =>
+                  x.toLowerCase().includes(query.toLowerCase()),
+                ),
+              ).length ? (
+                <Table headers={['When', 'Actor', 'Action', 'Record', 'Summary']}>
+                  {s.audit
+                    .filter((a) =>
+                      [a.action, a.actorName, a.entityId, a.summary].some((x) =>
+                        x.toLowerCase().includes(query.toLowerCase()),
+                      ),
+                    )
+                    .slice(0, 200)
+                    .map((a) => (
+                      <tr key={a.id}>
+                        <td>{datetime(a.at)}</td>
+                        <td>{a.actorName}</td>
+                        <td>{display(a.action)}</td>
+                        <td>{a.entityId}</td>
+                        <td>{a.summary}</td>
+                      </tr>
+                    ))}
+                </Table>
+              ) : (
+                <Empty
+                  title="No audit events found"
+                  description="Every saved action appears in the audit trail."
+                />
+              )}
+            </>
+          )}
+        </div>
       </Card>
     </>
   );
@@ -3421,6 +4290,8 @@ function Settings({
   editSettings,
   addUser,
   editUser,
+  changePassword,
+  resetPassword,
   canAdmin,
   financialRead,
 }: {
@@ -3430,6 +4301,8 @@ function Settings({
   editSettings: () => void;
   addUser: () => void;
   editUser: (u: User) => void;
+  changePassword: () => void;
+  resetPassword: (u: User) => void;
   canAdmin: boolean;
   financialRead: boolean;
 }) {
@@ -3439,6 +4312,11 @@ function Settings({
         eyebrow="Workspace administration"
         title="Settings"
         description="Company identity, account access and demo environment."
+        actions={
+          <Button variant="secondary" onClick={changePassword}>
+            Change my password
+          </Button>
+        }
       />
       <div className="settings-grid">
         <Card className="settings-card">
@@ -3456,11 +4334,19 @@ function Settings({
           <dl className="detail-grid">
             <div>
               <dt>Address</dt>
-              <dd>{s.settings.address}</dd>
+              <dd>
+                {currentUser.role === 'driver'
+                  ? 'Available on the assigned delivery challan'
+                  : s.settings.address}
+              </dd>
             </div>
             <div>
               <dt>GSTIN</dt>
-              <dd>{s.settings.gstin || 'Not configured'}</dd>
+              <dd>
+                {currentUser.role === 'driver'
+                  ? 'Available on the assigned delivery challan'
+                  : s.settings.gstin || 'Not configured'}
+              </dd>
             </div>
             {financialRead && (
               <div>
@@ -3514,6 +4400,9 @@ function Settings({
             </Button>
           )}
         </div>
+        {!users.length && (
+          <p className="muted pad">No team members are visible within your access.</p>
+        )}
         <Table headers={['Name', 'Email', 'Role', 'Branches', 'Status', 'Actions']}>
           {users.map((user) => (
             <tr key={user.id}>
@@ -3533,6 +4422,9 @@ function Settings({
                 {canAdmin && (
                   <div className="row-actions">
                     <button onClick={() => editUser(user)}>Edit access</button>
+                    {user.id !== currentUser.id && (
+                      <button onClick={() => resetPassword(user)}>Reset password</button>
+                    )}
                   </div>
                 )}
               </td>
@@ -3562,6 +4454,11 @@ function Detail({
   onClose: () => void;
   actions: {
     inspect: (c: Cylinder) => void;
+    emptyCylinder: (c: Cylinder) => void;
+    offsiteIncident: (c: Cylinder) => void;
+    stopIncidentRent: (c: Cylinder) => void;
+    writeOff: (c: Cylinder) => void;
+    rejectBatchCylinder: (b: Batch) => void;
     retag: (c: Cylinder) => void;
     dispatch: (o: Order) => void;
     deliver: (o: Order) => void;
@@ -3648,15 +4545,46 @@ function Detail({
               </div>
             </dl>
             <div className="detail-actions">
-              {permissions.inspect && c.condition !== 'retired' && (
+              {permissions.inspect && c.custody === 'plant' && c.condition !== 'retired' && (
                 <Button onClick={() => actions.inspect(c)}>Record inspection</Button>
               )}
-              {permissions.operate && (
+              {permissions.inspect &&
+                c.custody === 'plant' &&
+                c.contents !== 'empty' &&
+                c.condition !== 'retired' &&
+                !s.batches.some((b) => b.id === c.batchId && b.status === 'awaiting_release') && (
+                  <Button variant="secondary" onClick={() => actions.emptyCylinder(c)}>
+                    Record emptying
+                  </Button>
+                )}
+              {permissions.operate &&
+                (c.custody === 'customer' || s.pickups?.some((p) => p.id === c.custodianId)) &&
+                !c.offsiteIncident &&
+                (!permissions.financialRead ||
+                  s.rentals.some((r) => r.cylinderId === c.id && !r.end)) &&
+                c.condition !== 'retired' && (
+                  <Button variant="danger" onClick={() => actions.offsiteIncident(c)}>
+                    Report loss / damage
+                  </Button>
+                )}
+              {permissions.operate && c.custody === 'plant' && (
                 <Button variant="secondary" onClick={() => actions.retag(c)}>
                   Replace tag
                 </Button>
               )}
             </div>
+            {currentUser.role === 'admin' && c.offsiteIncident && c.condition !== 'retired' && (
+              <div className="detail-actions">
+                <Button variant="secondary" onClick={() => actions.stopIncidentRent(c)}>
+                  Approve rental stop
+                </Button>
+                {c.offsiteIncident.kind === 'lost' && (
+                  <Button variant="danger" onClick={() => actions.writeOff(c)}>
+                    Write off lost cylinder
+                  </Button>
+                )}
+              </div>
+            )}
             <div className="detail-section">
               <h3>Identity label</h3>
               <CylinderLabel cylinder={c} />
@@ -3767,8 +4695,9 @@ function Detail({
                   </Button>
                 )}
               {permissions.finance &&
+                ['delivered', 'closed_short'].includes(o.status) &&
                 o.deliveredIds.length > 0 &&
-                !s.invoices.some((x) => x.type === 'gas' && x.sourceId === o.id) && (
+                unbilledOrder(s.invoices, o.id) && (
                   <Button variant="secondary" onClick={() => actions.issueInvoice(o)}>
                     Issue invoice
                   </Button>
@@ -3830,7 +4759,10 @@ function Detail({
               </div>
               <div>
                 <dt>Operator</dt>
-                <dd>{b.operator}</dd>
+                <dd>
+                  {b.fillOperator || person(users, b.operator)}
+                  <small className="cell-sub">Recorded by {person(users, b.operator)}</small>
+                </dd>
               </div>
               <div>
                 <dt>Created</dt>
@@ -3853,14 +4785,49 @@ function Detail({
               {permissions.quality && b.status === 'awaiting_release' && (
                 <Button onClick={() => actions.release(b)}>Release batch</Button>
               )}
-              {permissions.quality && b.status === 'released' && (
+              {permissions.quality &&
+                b.status === 'awaiting_release' &&
+                b.cylinderIds.length > 1 && (
+                  <Button variant="secondary" onClick={() => actions.rejectBatchCylinder(b)}>
+                    Reject cylinder
+                  </Button>
+                )}
+              {permissions.quality && ['released', 'awaiting_release'].includes(b.status) && (
                 <Button variant="danger" onClick={() => actions.recall(b)}>
                   Recall batch
                 </Button>
               )}
             </div>
             <div className="detail-section">
+              {b.recipientTrace && (
+                <>
+                  <h3>Recipients of recalled gas</h3>
+                  {b.recipientTrace.length ? (
+                    b.recipientTrace.map((r, index) => (
+                      <p key={index}>
+                        {party(s, r.partyId)} ·{' '}
+                        {s.cylinders.find((c) => c.id === r.cylinderId)?.tag || 'Cylinder'} ·{' '}
+                        {s.orders.find((o) => o.id === r.orderId)?.number || 'Order'} ·{' '}
+                        {datetime(r.at)}
+                      </p>
+                    ))
+                  ) : (
+                    <p className="muted">
+                      No attributable delivery snapshots for this batch. Older records without batch
+                      snapshots require manual trace review.
+                    </p>
+                  )}
+                </>
+              )}
               <h3>Cylinders · {b.cylinderIds.length}</h3>
+              {!!b.rejectedCylinderIds?.length && (
+                <p className="muted">
+                  Rejected members:{' '}
+                  {b.rejectedCylinderIds
+                    .map((id) => s.cylinders.find((c) => c.id === id)?.tag || id)
+                    .join(', ')}
+                </p>
+              )}
               <div className="tag-grid">
                 {b.cylinderIds.map((cid) => {
                   const cylinder = s.cylinders.find((x) => x.id === cid);
@@ -3967,36 +4934,49 @@ function Detail({
               )}
               <div className="invoice-head">
                 <div>
-                  <div className="eyebrow">{display(i.type)} invoice</div>
+                  <div className="eyebrow">
+                    {i.type === 'credit' ? 'Credit note' : `${display(i.type)} invoice`}
+                  </div>
                   <h2>{i.number}</h2>
                   <p>
-                    {i.issuer?.companyName || s.settings.companyName}
+                    {i.issuer?.companyName ??
+                      'Issuer identity was not captured on this legacy invoice'}
                     <br />
-                    {i.issuer?.address || s.settings.address}
+                    {i.issuer?.address ?? ''}
                     <br />
-                    {(i.issuer?.gstin || s.settings.gstin) &&
-                      `GSTIN ${i.issuer?.gstin || s.settings.gstin}`}
+                    {(i.issuer?.gstin ?? '') && `GSTIN ${i.issuer?.gstin ?? ''}`}
                   </p>
                 </div>
                 <div className="invoice-dates">
                   <span>Issued {date(i.issuedAt)}</span>
-                  <span>Due {date(i.dueDate)}</span>
-                  <Badge tone={statusTone(i.status)}>{display(i.status)}</Badge>
+                  {i.type !== 'credit' && <span>Due {date(i.dueDate)}</span>}
+                  <Badge tone={statusTone(i.status)}>
+                    {i.type === 'credit' ? 'Credit recorded' : display(i.status)}
+                  </Badge>
                 </div>
               </div>
+              {i.type === 'credit' && (
+                <p>
+                  Credit against{' '}
+                  {s.invoices.find((original) => original.id === i.sourceId)?.number || i.sourceId}
+                </p>
+              )}
+              {i.status === 'credited' && (
+                <p>
+                  Credited by{' '}
+                  {s.invoices.find((credit) => credit.type === 'credit' && credit.sourceId === i.id)
+                    ?.number || 'linked credit note'}
+                </p>
+              )}
               <div className="invoice-billto">
                 <small>BILL TO</small>
-                <strong>{i.billTo?.name || party(s, i.partyId)}</strong>
+                <strong>{i.billTo?.name || 'Historical customer identity unavailable'}</strong>
                 <span>
                   {i.billTo
                     ? `${i.billTo.address}, ${i.billTo.city}`
-                    : s.parties.find((p) => p.id === i.partyId)?.address}
+                    : 'Historical address was not captured'}
                 </span>
-                {(i.billTo?.gstin || s.parties.find((p) => p.id === i.partyId)?.gstin) && (
-                  <span>
-                    GSTIN {i.billTo?.gstin || s.parties.find((p) => p.id === i.partyId)?.gstin}
-                  </span>
-                )}
+                {(i.billTo?.gstin ?? '') && <span>GSTIN {i.billTo?.gstin ?? ''}</span>}
               </div>
               <Table headers={['Description', 'Qty', 'Unit price', 'Amount']}>
                 {i.lines.map((line, index) => (
@@ -4021,13 +5001,31 @@ function Detail({
                   <span>Total</span>
                   <strong>{money(i.totalPaise)}</strong>
                 </div>
+                {!!i.creditedPaise && (
+                  <div>
+                    <span>Credited</span>
+                    <strong>{money(i.creditedPaise)}</strong>
+                  </div>
+                )}
+                {!!i.appliedCreditPaise && (
+                  <div>
+                    <span>Customer credit applied</span>
+                    <strong>{money(i.appliedCreditPaise)}</strong>
+                  </div>
+                )}
+                {i.type === 'credit' && (
+                  <div>
+                    <span>Available customer credit</span>
+                    <strong>{money(creditNoteAvailable(s, i.id))}</strong>
+                  </div>
+                )}
                 <div>
                   <span>Paid</span>
                   <strong>{money(i.paidPaise)}</strong>
                 </div>
                 <div>
                   <span>Balance</span>
-                  <strong>{money(i.totalPaise - i.paidPaise)}</strong>
+                  <strong>{money(invoiceBalance(i))}</strong>
                 </div>
               </div>
               {i.notes && <p className="invoice-notes">{i.notes}</p>}
@@ -4042,11 +5040,11 @@ function Detail({
                   <Button onClick={() => actions.receipt(i)}>Record payment</Button>
                 )}
               {permissions.finance &&
-                i.paidPaise === 0 &&
-                i.status === 'issued' &&
+                i.status !== 'credited' &&
+                (i.creditedPaise || 0) < i.totalPaise &&
                 i.type !== 'credit' && (
                   <Button variant="danger" onClick={() => actions.credit(i)}>
-                    Issue full credit
+                    Issue credit note
                   </Button>
                 )}
             </div>

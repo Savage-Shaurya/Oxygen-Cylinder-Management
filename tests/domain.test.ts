@@ -63,6 +63,121 @@ test('seed is rich, synthetic, and balances references', () => {
       assert.equal(cylinder.gas, batch.gas, `${batch.number} gas mismatch`);
     }
   }
+  for (const order of state.orders) {
+    for (const id of order.cylinderIds) {
+      const cylinder = state.cylinders.find((c) => c.id === id)!;
+      assert.ok(
+        cylinder.ownerId === 'company' ||
+          state.parties.find((p) => p.id === cylinder.ownerId)?.type === 'supplier' ||
+          cylinder.ownerId === order.partyId,
+        `${order.number} contains another customer's cylinder ${id}`,
+      );
+    }
+  }
+});
+
+test('dispatch rejects another customer’s cylinder', () => {
+  let state = createSeedState();
+  const c = state.cylinders.find((c) => c.id === 'c-005')!;
+  assert.equal(c.ownerId, 'p-home-1');
+  state = act(
+    state,
+    'order.create',
+    {
+      partyId: 'p-hospital-1',
+      branchId: c.branchId,
+      gas: c.gas,
+      size: c.size,
+      quantity: 1,
+      priority: 'normal',
+      dueDate: '2026-09-28',
+      notes: '',
+      unitPricePaise: 100,
+    },
+    'operations',
+  );
+  const order = state.orders.at(-1)!;
+  denied(() =>
+    act(
+      state,
+      'order.dispatch',
+      {
+        orderId: order.id,
+        cylinderIds: [c.id],
+        vehicle: 'DEMO',
+        driverId: 'u-driver',
+      },
+      'operations',
+    ),
+  );
+});
+
+test('gas invoice waits until every vehicle cylinder is delivered or unloaded', () => {
+  let state = createSeedState();
+  denied(() =>
+    act(
+      state,
+      'finance.invoice',
+      {
+        orderId: 'o-partial-1',
+        taxBps: 1200,
+        dueDate: '2026-10-28',
+        notes: '',
+      },
+      'finance',
+    ),
+  );
+  state = act(
+    state,
+    'order.unload',
+    {
+      orderId: 'o-partial-1',
+      cylinderIds: ['c-004'],
+      notes: 'Route ended',
+    },
+    'operations',
+  );
+  state = act(
+    state,
+    'finance.invoice',
+    {
+      orderId: 'o-partial-1',
+      taxBps: 1200,
+      dueDate: '2026-10-28',
+      notes: '',
+    },
+    'finance',
+  );
+  assert.equal(state.invoices.at(-1)?.lines[0].quantity, 1);
+});
+
+test('cancelled order retains its reason and cannot be dispatched', () => {
+  let state = createSeedState();
+  state = act(
+    state,
+    'order.cancel',
+    {
+      orderId: 'o-open-1',
+      reason: 'Customer withdrew request',
+    },
+    'operations',
+  );
+  const order = state.orders.find((o) => o.id === 'o-open-1')!;
+  assert.equal(order.status, 'cancelled');
+  assert.equal(order.cancelReason, 'Customer withdrew request');
+  denied(() =>
+    act(
+      state,
+      'order.dispatch',
+      {
+        orderId: order.id,
+        cylinderIds: ['c-005', 'c-006', 'c-007'],
+        vehicle: 'DEMO',
+        driverId: 'u-driver',
+      },
+      'operations',
+    ),
+  );
 });
 
 test('registration, inspection, fill, independent release, dispatch and partial delivery', () => {
@@ -183,7 +298,7 @@ test('registration, inspection, fill, independent release, dispatch and partial 
         'driver',
         ['b-faridabad'],
       ),
-    403,
+    404,
   );
   state = act(
     state,
@@ -232,13 +347,14 @@ test('retired cylinders are permanent and branch scope applies to admin', () => 
         'admin',
         ['b-faridabad'],
       ),
-    403,
+    404,
   );
   state = act(state, 'cylinder.inspect', {
     cylinderId: c.id,
     version: c.version,
     condition: 'retired',
     notes: 'Scrapped',
+    ownerAuthorizationRef: 'OWNER-RETIRE-1',
   });
   denied(() =>
     act(state, 'cylinder.inspect', {
@@ -291,9 +407,8 @@ test('financial postings reject duplicates, overpayment and excess refunds', () 
       'finance',
     ),
   );
-  denied(() =>
-    act(state, 'finance.credit', { invoiceId: invoice.id, reason: 'Correction' }, 'finance'),
-  );
+  state = act(state, 'finance.credit', { invoiceId: invoice.id, amountPaise: 100, reason: 'Correction' }, 'finance');
+  assert.equal(state.invoices.at(-1)?.type, 'credit');
   denied(() =>
     act(
       state,
@@ -306,6 +421,115 @@ test('financial postings reject duplicates, overpayment and excess refunds', () 
         reason: 'Return',
       },
       'finance',
+    ),
+  );
+});
+
+test('deposit and partial refund preserve a traceable remaining balance', () => {
+  let state = createSeedState();
+  const partyId = 'p-home-1';
+  const starting =
+    state.receipts
+      .filter((r) => r.partyId === partyId && r.kind === 'deposit')
+      .reduce((n, r) => n + r.amountPaise, 0) -
+    state.receipts
+      .filter((r) => r.partyId === partyId && r.kind === 'refund')
+      .reduce((n, r) => n + r.amountPaise, 0);
+  state = act(
+    state,
+    'finance.deposit',
+    {
+      partyId,
+      amountPaise: 50000,
+      method: 'bank',
+      reference: 'DEPOSIT-FLOW',
+    },
+    'finance',
+  );
+  state = act(
+    state,
+    'finance.refund',
+    {
+      partyId,
+      amountPaise: 20000,
+      method: 'bank',
+      reference: 'REFUND-FLOW',
+      reason: 'Unused deposit',
+      overrideReason: 'Approved while customer stock remains out',
+    },
+    'admin',
+  );
+  const deposits = state.receipts.filter((r) => r.partyId === partyId && r.kind === 'deposit');
+  const refunds = state.receipts.filter((r) => r.partyId === partyId && r.kind === 'refund');
+  assert.equal(
+    deposits.reduce((n, r) => n + r.amountPaise, 0) -
+      refunds.reduce((n, r) => n + r.amountPaise, 0),
+    starting + 30000,
+  );
+  denied(() =>
+    act(
+      state,
+      'finance.refund',
+      {
+        partyId,
+        amountPaise: starting + 30001,
+        method: 'bank',
+        reference: 'REFUND-TOO-MUCH',
+        reason: 'Excess',
+      },
+      'finance',
+    ),
+  );
+});
+
+test('return discrepancy can be resolved once within its branch', () => {
+  let state = createSeedState();
+  state = act(
+    state,
+    'return.discrepancy',
+    {
+      branchId: 'b-delhi',
+      serial: 'UNKNOWN-123',
+      notes: 'Physical count mismatch',
+    },
+    'operations',
+  );
+  const exception = state.exceptions.at(-1)!;
+  denied(
+    () =>
+      act(
+        state,
+        'exception.resolve',
+        {
+          exceptionId: exception.id,
+          resolution: 'Count reconciled',
+        },
+        'quality',
+        ['b-faridabad'],
+      ),
+    404,
+  );
+  state = act(
+    state,
+    'exception.resolve',
+    {
+      exceptionId: exception.id,
+      resolution: 'Count reconciled',
+    },
+    'quality',
+    ['b-delhi'],
+  );
+  assert.equal(state.exceptions.find((e) => e.id === exception.id)?.status, 'resolved');
+  denied(() =>
+    act(
+      state,
+      'exception.resolve',
+      {
+        exceptionId: exception.id,
+        resolution: 'Again',
+      },
+      'quality',
+      ['b-delhi'],
     ),
   );
 });
@@ -385,6 +609,8 @@ test('supplier route cannot move quarantined or full stock and received stock ne
       cylinderIds: [empty.id],
       reference: 'DEMO-RETURN',
       gas: empty.gas,
+      service: 'fill',
+      contents: 'full',
       notes: '',
     },
     'operations',
@@ -392,6 +618,7 @@ test('supplier route cannot move quarantined or full stock and received stock ne
   const received = state.cylinders.find((c) => c.id === empty.id)!;
   assert.equal(received.condition, 'inspection_due');
   const batch = state.batches.find((b) => b.id === received.batchId)!;
+  assert.equal(batch.supplierId, 'p-supplier-2');
   denied(() =>
     act(
       state,
@@ -450,6 +677,10 @@ test('purchase receipt creates new assets without dispatch release', () => {
   const b = state.batches.find((b) => b.id === c.batchId)!;
   assert.equal(c.condition, 'inspection_due');
   assert.equal(b.status, 'awaiting_release');
+  assert.equal(b.supplierId, 'p-supplier-2');
+  const supplier = state.parties.find((p) => p.id === 'p-supplier-2')!;
+  const { id, ...fields } = supplier;
+  denied(() => act(state, 'party.update', { ...fields, partyId: id, type: 'hospital' }, 'finance'));
   denied(() =>
     act(
       state,
@@ -610,7 +841,7 @@ test('rental billing uses inclusive period, exclusive return, original free days
         {
           partyId: 'p-home-1',
           periodStart: '2026-09-25',
-          periodEnd: '2026-09-28',
+          periodEnd: '2026-09-27',
           taxBps: 1200,
           dueDate: '2026-10-28',
         },
@@ -733,6 +964,37 @@ test('manufacturer scoped serials and permanent tag aliases retain evidence', ()
       ),
     409,
   );
+});
+
+test('physical retag requires the cylinder to be at the plant', () => {
+  let state = createSeedState();
+  const held = state.cylinders.find((c) => c.id === 'c-001')!;
+  denied(() =>
+    act(
+      state,
+      'cylinder.retag',
+      {
+        cylinderId: held.id,
+        version: held.version,
+        tag: 'NEW-REMOTE-TAG',
+        reason: 'Label replacement',
+      },
+      'operations',
+    ),
+  );
+  const plant = state.cylinders.find((c) => c.id === 'c-030')!;
+  state = act(
+    state,
+    'cylinder.retag',
+    {
+      cylinderId: plant.id,
+      version: plant.version,
+      tag: 'NEW-PLANT-TAG',
+      reason: 'Label replacement',
+    },
+    'operations',
+  );
+  assert.equal(state.cylinders.find((c) => c.id === plant.id)?.tag, 'NEW-PLANT-TAG');
 });
 
 test('test evidence changes require complete coherent dates and certificate', () => {
@@ -866,6 +1128,19 @@ test('party classification cannot strand supplier custody or rewrite customer id
   const customer = state.parties.find((p) => p.id === 'p-hospital-1')!;
   const { id: supplierId, ...supplierFields } = supplier;
   const { id: customerId, ...customerFields } = customer;
+  const empty = state.cylinders.find(
+    (c) =>
+      c.branchId === supplier.branchId &&
+      c.condition === 'serviceable' &&
+      c.contents === 'empty' &&
+      !c.batchId,
+  )!;
+  state = act(state, 'supplier.send', {
+    supplierId,
+    cylinderIds: [empty.id],
+    reference: 'CLASSIFICATION-TEST',
+    notes: '',
+  });
   denied(() =>
     act(
       state,
@@ -891,8 +1166,89 @@ test('party classification cannot strand supplier custody or rewrite customer id
   assert.equal(state.parties.find((p) => p.id === supplier.id)?.contact, 'Updated contact');
 });
 
+test('unused party classification can be corrected without changing identity', () => {
+  let state = createSeedState();
+  const supplier = state.parties.find((p) => p.id === 'p-supplier-2')!;
+  const { id, ...fields } = supplier;
+  state = act(state, 'party.update', { ...fields, partyId: id, type: 'homecare' }, 'finance');
+  assert.equal(state.parties.find((p) => p.id === id)?.type, 'homecare');
+  assert.match(state.audit[0].summary, /supplier.*homecare/);
+  state = act(state, 'order.create', {
+    partyId: id,
+    branchId: supplier.branchId,
+    gas: 'Medical oxygen',
+    size: 'B',
+    quantity: 1,
+    priority: 'normal',
+    dueDate: '2026-10-01',
+    notes: '',
+    unitPricePaise: 10000,
+  });
+  denied(() => act(state, 'party.update', { ...fields, partyId: id, type: 'supplier' }, 'finance'));
+});
+
+test('party edit cannot duplicate another party name in the same branch', () => {
+  const state = createSeedState();
+  const hospital = state.parties.find((p) => p.id === 'p-hospital-1')!;
+  const homecare = state.parties.find((p) => p.id === 'p-home-1')!;
+  const { id, ...fields } = homecare;
+  denied(
+    () =>
+      act(
+        state,
+        'party.update',
+        {
+          ...fields,
+          partyId: id,
+          name: hospital.name.toUpperCase(),
+        },
+        'finance',
+      ),
+    409,
+  );
+});
+
+test('supplier route history prevents classification correction after stock returns', () => {
+  let state = createSeedState();
+  const supplier = state.parties.find((p) => p.id === 'p-supplier-2')!;
+  const empty = state.cylinders.find(
+    (c) =>
+      c.branchId === supplier.branchId &&
+      c.condition === 'serviceable' &&
+      c.contents === 'empty' &&
+      !c.batchId,
+  )!;
+  state = act(state, 'supplier.send', {
+    supplierId: supplier.id,
+    cylinderIds: [empty.id],
+    reference: 'ROUTE-HISTORY',
+    notes: '',
+  });
+  state = act(state, 'supplier.receive', {
+    supplierId: supplier.id,
+    cylinderIds: [empty.id],
+    reference: 'ROUTE-HISTORY-RETURN',
+    gas: empty.gas,
+    service: 'fill',
+    contents: 'full',
+    notes: '',
+  });
+  const { id, ...fields } = supplier;
+  denied(() => act(state, 'party.update', { ...fields, partyId: id, type: 'hospital' }, 'finance'));
+});
+
 test('issued invoices and credit notes preserve buyer and seller identity after master edits', () => {
   let state = createSeedState();
+  state = act(
+    state,
+    'order.unload',
+    {
+      orderId: 'o-partial-1',
+      cylinderIds: ['c-004'],
+      notes: 'Route ended',
+    },
+    'operations',
+  );
   state = act(
     state,
     'finance.invoice',
@@ -971,7 +1327,7 @@ test('pickup separates customer collection from warehouse receipt and discrepanc
         'driver',
         ['b-faridabad'],
       ),
-    403,
+    404,
   );
   state = act(
     state,
@@ -1018,9 +1374,19 @@ test('large paise tax is rounded with exact integer arithmetic', () => {
   o.unitPricePaise = 1000000026868675;
   state = act(
     state,
+    'order.unload',
+    {
+      orderId: o.id,
+      cylinderIds: ['c-004'],
+      notes: 'Route ended',
+    },
+    'operations',
+  );
+  state = act(
+    state,
     'finance.invoice',
-    { orderId: o.id, taxBps: 1234, dueDate: '2026-10-28', notes: '' },
-    'finance',
+    { orderId: o.id, taxBps: 1234, dueDate: '2026-10-28', notes: '', creditLimitOverrideReason: 'Integer arithmetic test' },
+    'admin',
   );
   const i = state.invoices.at(-1)!;
   const expected = (BigInt(i.subtotalPaise) * 1234n + 5000n) / 10000n;

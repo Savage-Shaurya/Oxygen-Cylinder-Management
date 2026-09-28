@@ -34,7 +34,9 @@ test('expired, future-dated and conflicted records cannot replay automatically',
   assert.match(validateQueuedDelivery(record, 'u-driver', '2026-09-29T09:00:00Z')!, /expired/);
   assert.match(validateQueuedDelivery(record, 'u-driver', '2026-09-27T09:00:00Z')!, /time/);
   assert.equal(canRetryDelivery(409), false);
-  assert.equal(canRetryDelivery(403), false);
+  assert.equal(canRetryDelivery(401), true);
+  assert.equal(canRetryDelivery(403, 'Invalid CSRF token'), true);
+  assert.equal(canRetryDelivery(403, 'Role is not allowed'), false);
   assert.equal(canRetryDelivery(0), true);
   assert.equal(canRetryDelivery(503), true);
 });

@@ -8,6 +8,7 @@ const DB_NAME = 'batra-field-evidence-v1';
 interface StoredRecord {
   id: string;
   userId: string;
+  orderFingerprint?: string;
   iv: Uint8Array;
   ciphertext: ArrayBuffer;
 }
@@ -15,10 +16,14 @@ let opening: Promise<IDBDatabase> | undefined;
 function database(): Promise<IDBDatabase> {
   if (!opening)
     opening = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = () => {
-        req.result.createObjectStore('records', { keyPath: 'id' });
-        req.result.createObjectStore('keys');
+        const records = req.transaction!.objectStoreNames.contains('records')
+          ? req.transaction!.objectStore('records')
+          : req.result.createObjectStore('records', { keyPath: 'id' });
+        if (!records.indexNames.contains('orderFingerprint'))
+          records.createIndex('orderFingerprint', 'orderFingerprint', { unique: true });
+        if (!req.result.objectStoreNames.contains('keys')) req.result.createObjectStore('keys');
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => {
@@ -78,9 +83,19 @@ async function save(record: QueuedDelivery): Promise<void> {
     key,
     new TextEncoder().encode(JSON.stringify(record)),
   );
+  const orderFingerprint = Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(JSON.stringify([record.userId, record.action.payload.orderId])),
+      ),
+    ),
+    (value) => value.toString(16).padStart(2, '0'),
+  ).join('');
   await write('records', {
     id: record.id,
     userId: record.userId,
+    orderFingerprint,
     iv,
     ciphertext,
   } satisfies StoredRecord);
@@ -110,7 +125,6 @@ export async function listQueuedDeliveries(userId: string): Promise<QueuedDelive
 export async function queueDelivery(
   userId: string,
   payload: Record<string, unknown>,
-  expectedRevision: number,
 ): Promise<QueuedDelivery> {
   if (
     !userId ||
@@ -128,19 +142,27 @@ export async function queueDelivery(
       'This order already has saved delivery evidence. Review it before adding another.',
     );
   const id = crypto.randomUUID();
+  const occurredAt = new Date().toISOString();
   const record: QueuedDelivery = {
     id,
     userId,
-    createdAt: new Date().toISOString(),
+    createdAt: occurredAt,
     status: 'pending',
     action: {
       type: 'order.deliver',
-      payload,
-      expectedRevision,
+      payload: { ...payload, occurredAt },
       idempotencyKey: id,
     },
   };
-  await save(record);
+  try {
+    await save(record);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'ConstraintError')
+      throw new Error(
+        'This order already has saved delivery evidence. Review it before adding another.',
+      );
+    throw error;
+  }
   window.dispatchEvent(new Event('batra-offline-change'));
   return record;
 }
@@ -168,6 +190,15 @@ export async function clearQueuedDeliveries(userId: string): Promise<void> {
   });
   keys.delete(userId);
 }
+export function offlineEvidenceDocument(record: QueuedDelivery): string {
+  return JSON.stringify({
+    format: 'CTMS saved delivery evidence',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    notice: 'Locally recorded claim; server acceptance and physical reconciliation must be verified separately.',
+    record,
+  }, null, 2);
+}
 let synchronizing = false;
 export async function syncQueuedDeliveries(
   userId: string,
@@ -189,7 +220,14 @@ export async function syncQueuedDeliveries(
         await discardQueuedDelivery(userId, record.id);
         accepted++;
       } catch (error) {
-        if (!(error instanceof ApiError) || canRetryDelivery(error.status)) throw error;
+        if (!(error instanceof ApiError)) throw error;
+        if (canRetryDelivery(error.status, error.message)) {
+          if (error.status === 401 || error.status === 403)
+            throw new Error(
+              'Sign in again, then retry saved deliveries. Evidence remains on this device.',
+            );
+          throw error;
+        }
         await save({ ...record, status: 'conflict', error: error.message });
         conflicts++;
       }

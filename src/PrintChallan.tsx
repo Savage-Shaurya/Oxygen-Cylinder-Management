@@ -25,9 +25,10 @@ export default function PrintChallan({ order, state }: { order: Order; state: Ap
     doc.body.append(header);
     const brand = doc.createElement('div');
     header.append(brand);
-    text('h1', state.settings.companyName, brand);
-    text('div', state.settings.address, brand);
-    if (state.settings.gstin) text('p', `GSTIN: ${state.settings.gstin}`, brand);
+    const issuer = order.challanSnapshot?.issuer;
+    text('h1', issuer?.companyName || 'Historical issuer unavailable', brand);
+    if (issuer?.address) text('div', issuer.address, brand);
+    if (issuer?.gstin) text('p', `GSTIN: ${issuer.gstin}`, brand);
     const reference = doc.createElement('div');
     header.append(reference);
     text('h2', 'Delivery challan', reference);
@@ -36,9 +37,13 @@ export default function PrintChallan({ order, state }: { order: Order; state: Ap
     if (state.settings.mode === 'demo')
       text('p', 'DEMONSTRATION · Synthetic data · Not for commercial or statutory use').className =
         'demo';
-    const party = state.parties.find((p) => p.id === order.partyId);
-    text('h2', party?.name || 'Customer');
-    text('p', `${party?.address || ''}${party?.city ? `, ${party.city}` : ''}`);
+    if (!order.challanSnapshot)
+      text('p', 'Historical identity snapshot unavailable for this legacy challan. The issuer and customer details at dispatch cannot be verified from this record.').className = 'demo';
+    const party = order.challanSnapshot?.recipient;
+    text('h2', party?.name || 'Historical customer unavailable');
+    if (party?.address || party?.city)
+      text('p', `${party?.address || ''}${party?.city ? `, ${party.city}` : ''}`);
+    if (party?.gstin) text('p', `Customer GSTIN: ${party.gstin}`);
     text(
       'p',
       `Gas: ${order.gas} · Cylinder size: ${order.size} · Vehicle: ${order.vehicle || 'Not assigned'}`,

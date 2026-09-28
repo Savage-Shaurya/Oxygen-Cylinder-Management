@@ -1697,3 +1697,22 @@ td strong {
     font-size: 11px;
   }
 }
+
+@media (max-width: 560px) {
+  .form-actions {
+    flex-wrap: wrap;
+    justify-content: stretch;
+    gap: 8px;
+  }
+  .form-actions .button {
+    flex: 1 1 100%;
+    min-width: 0;
+    white-space: normal;
+  }
+  .detail-actions {
+    flex-wrap: wrap;
+  }
+  .detail-actions .button {
+    flex: 1 1 auto;
+  }
+}

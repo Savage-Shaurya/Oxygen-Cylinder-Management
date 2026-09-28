@@ -1,6 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import ScannerInput from '../ScannerInput';
-import { updateFormValues, declaredFormValues } from './form-values';
+import { ApiError } from '../api';
+import { updateFormValues, declaredFormValues, friendlyFormError } from './form-values';
 import { Button, Field, Modal } from './UI';
 
 export type Option = { value: string; label: string; disabled?: boolean };
@@ -25,9 +26,15 @@ export type FormField = {
   min?: number;
   max?: number;
   step?: number;
+  minLength?: number;
+  maxLength?: number;
   placeholder?: string;
   value?: string | number | string[];
   span?: 'full';
+  defaultOnChange?: {
+    dependsOn: string[];
+    value: (values: Record<string, unknown>) => unknown;
+  };
 };
 
 interface Props {
@@ -44,6 +51,54 @@ interface Props {
     onSubmit: (values: Record<string, unknown>) => Promise<void>;
     offlineOnly?: boolean;
   };
+  onReloadLatest?: (values: Record<string, unknown>) => Promise<ReloadedForm>;
+}
+
+export type ReloadedForm = {
+  fields: FormField[];
+  onSubmit: (values: Record<string, unknown>) => Promise<void>;
+  initial?: Record<string, unknown>;
+  title?: string;
+  subtitle?: string;
+  warning?: string;
+  alternate?: Props['alternate'];
+  resetValues?: boolean;
+};
+
+export function recoverFormValues(
+  previous: Record<string, unknown>,
+  fields: FormField[],
+  initial: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const next: Record<string, unknown> = Object.fromEntries(
+    fields.map((field) => [
+      field.name,
+      previous[field.name] ?? initial[field.name] ?? field.value ??
+        (field.type === 'multiselect' ? [] : ''),
+    ]),
+  );
+  // Dynamic choices can depend on another field, so check all choices after carrying values over.
+  for (let pass = 0; pass < fields.length; pass++) {
+    let changed = false;
+    for (const field of fields) {
+      if (field.type !== 'select' && field.type !== 'multiselect') continue;
+      const choices = typeof field.options === 'function' ? field.options(next) : field.options;
+      const allowed = new Set((choices || []).filter((choice) => !choice.disabled).map((choice) => choice.value));
+      const current = next[field.name];
+      if (field.type === 'multiselect') {
+        const kept = Array.isArray(current) ? current.filter((value) => allowed.has(String(value))) : [];
+        if (!Array.isArray(current) || kept.length !== current.length) {
+          next[field.name] = kept;
+          changed = true;
+        }
+      } else if (typeof current !== 'string' || (current && !allowed.has(current))) {
+        next[field.name] = '';
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return next;
 }
 
 export function ActionForm({
@@ -56,6 +111,7 @@ export function ActionForm({
   initial = {},
   warning,
   alternate,
+  onReloadLatest,
 }: Props) {
   const [values, setValues] = useState<Record<string, unknown>>(() =>
     Object.fromEntries(
@@ -67,20 +123,18 @@ export function ActionForm({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [online, setOnline] = useState(navigator.onLine);
+  const [stale, setStale] = useState(false);
+  const [reloaded, setReloaded] = useState<ReloadedForm | null>(null);
+  const activeFields = reloaded?.fields ?? fields;
+  const activeSubmit = reloaded?.onSubmit ?? onSubmit;
+  const activeAlternate = reloaded?.alternate ?? alternate;
+  const errorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const on = () => setOnline(true);
-    const off = () => setOnline(false);
-    window.addEventListener('online', on);
-    window.addEventListener('offline', off);
-    return () => {
-      window.removeEventListener('online', on);
-      window.removeEventListener('offline', off);
-    };
-  }, []);
+    if (error) errorRef.current?.focus();
+  }, [error]);
 
   function set(name: string, value: unknown) {
-    setValues((previous) => updateFormValues(previous, name, value, fields));
+    setValues((previous) => updateFormValues(previous, name, value, activeFields));
     setError('');
   }
   async function submit(event: FormEvent) {
@@ -88,10 +142,16 @@ export function ActionForm({
     setError('');
     setBusy(true);
     try {
-      await onSubmit(declaredFormValues(values, fields));
+      await activeSubmit(declaredFormValues(values, activeFields));
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Could not save. Please try again.');
+      const message = failure instanceof Error ? failure.message : '';
+      setStale(!!onReloadLatest && failure instanceof ApiError && failure.status === 409);
+      setError(
+        failure instanceof Error
+          ? friendlyFormError(message, activeFields)
+          : 'Could not save. Please try again.',
+      );
     } finally {
       setBusy(false);
     }
@@ -100,21 +160,44 @@ export function ActionForm({
     setError('');
     setBusy(true);
     try {
-      await alternate?.onSubmit(declaredFormValues(values, fields));
+      await activeAlternate?.onSubmit(declaredFormValues(values, activeFields));
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Could not save on this device.');
+      setError(
+        failure instanceof Error
+          ? friendlyFormError(failure.message, activeFields)
+          : 'Could not save on this device.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function reloadLatest() {
+    if (!onReloadLatest) return;
+    setBusy(true);
+    try {
+      const latest = await onReloadLatest(declaredFormValues(values, activeFields));
+      setValues(latest.resetValues
+        ? recoverFormValues({}, latest.fields, latest.initial)
+        : recoverFormValues(values, latest.fields, latest.initial));
+      setReloaded(latest);
+      setStale(false);
+      setError(latest.resetValues
+        ? 'Latest saved values loaded. Review them before saving your changes again.'
+        : 'Review the refreshed choices before saving. Any unavailable selections were cleared.');
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not reload the latest form.');
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Modal title={title} subtitle={subtitle} onClose={onClose} width="wide">
+    <Modal title={reloaded?.title ?? title} subtitle={reloaded?.subtitle ?? subtitle} onClose={onClose} width="wide">
       <form onSubmit={submit} className="action-form">
-        {warning && <div className="form-warning">{warning}</div>}
+        {(reloaded?.warning ?? warning) && <div className="form-warning">{reloaded?.warning ?? warning}</div>}
         <div className="form-grid">
-          {fields.map((field) => {
+          {activeFields.map((field) => {
             const options =
               typeof field.options === 'function' ? field.options(values) : field.options;
             const selected = (values[field.name] as string[]) || [];
@@ -202,6 +285,8 @@ export function ActionForm({
                       rows={4}
                       required={field.required}
                       value={String(values[field.name] ?? '')}
+                      minLength={field.minLength}
+                      maxLength={field.maxLength}
                       placeholder={field.placeholder}
                       onChange={(event) => set(field.name, event.target.value)}
                     />
@@ -214,6 +299,8 @@ export function ActionForm({
                       step={field.step}
                       placeholder={field.placeholder}
                       value={String(values[field.name] ?? '')}
+                      minLength={field.minLength}
+                      maxLength={field.maxLength}
                       onChange={(event) => set(field.name, event.target.value)}
                     />
                   )}
@@ -223,20 +310,25 @@ export function ActionForm({
           })}
         </div>
         {error && (
-          <div className="form-error" role="alert">
+          <div className="form-error" role="alert" ref={errorRef} tabIndex={-1}>
             {error}
           </div>
+        )}
+        {stale && onReloadLatest && (
+          <button type="button" className="button btn" disabled={busy} onClick={() => void reloadLatest()}>
+            Reload latest form
+          </button>
         )}
         <div className="form-actions">
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          {alternate && (!alternate.offlineOnly || !online) && (
-            <Button variant="secondary" onClick={submitAlternate} loading={busy}>
-              {alternate.label}
+          {activeAlternate && (
+            <Button variant="secondary" onClick={submitAlternate} loading={busy} disabled={stale}>
+              {activeAlternate.label}
             </Button>
           )}
-          <Button type="submit" loading={busy}>
+          <Button type="submit" loading={busy} disabled={stale}>
             {submitLabel}
           </Button>
         </div>

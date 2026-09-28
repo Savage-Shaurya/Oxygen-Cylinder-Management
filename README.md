@@ -82,7 +82,7 @@ npm run build
 NODE_ENV=production DEMO_MODE=false CTMS_DB_PATH=data/live.sqlite npm start
 ```
 
-The server defaults to loopback. Production requires a TLS reverse proxy, protected persistent volume and backups. Production cookies are secure; sign-in is intended through HTTPS. Demo users/data are refused in production. Choose the actual tax and commercial rules with the client's accountant before importing opening balances. The Dockerfile provides a single-server packaging option; infrastructure deployment is not performed by this project.
+The server defaults to loopback. Production requires a TLS reverse proxy, protected persistent volume and backups. Set `CTMS_TRUST_PROXY_CIDRS` to the comma-separated IP addresses or CIDR ranges of your actual reverse proxy (for a same-host proxy, `loopback`). This lets sign-in use the client's IP and HTTPS origin while ignoring forwarded headers from other sources. Production cookies are secure; sign-in is intended through HTTPS. Demo users/data are refused in production. Choose the actual tax and commercial rules with the client's accountant before importing opening balances. The Dockerfile provides a single-server packaging option; infrastructure deployment is not performed by this project.
 
 ## Backup and recovery
 

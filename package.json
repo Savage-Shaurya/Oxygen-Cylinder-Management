@@ -7,9 +7,10 @@
     "dev": "concurrently -k -n api,web \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
     "build": "tsc --noEmit && vite build",
     "start": "tsx server/index.ts",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx --test tests/*.test.ts tests/*.test.tsx",
     "typecheck": "tsc --noEmit",
-    "demo:new": "tsx scripts/demo.ts"
+    "demo:new": "tsx scripts/demo.ts",
+    "demo:test": "tsx scripts/testing-demo.ts"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -28,13 +29,17 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/express": "^5.0.1",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.14.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.4.1",
     "concurrently": "^9.1.2",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^29.1.1",
     "prettier": "^3.9.9",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",

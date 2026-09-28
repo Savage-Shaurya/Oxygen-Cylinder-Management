@@ -37,6 +37,8 @@ export interface Cylinder {
   version: number;
   createdAt: string;
   previousTags?: string[];
+  offsiteIncident?: { kind: 'lost' | 'damaged'; at: string; notes: string };
+  writtenOffAt?: string;
 }
 export interface Party {
   id: string;
@@ -52,6 +54,7 @@ export interface Party {
   dailyRentalPaise: number;
   freeDays: number;
   depositPaise: number;
+  version?: number;
 }
 export interface Order {
   id: string;
@@ -66,6 +69,7 @@ export interface Order {
   notes: string;
   unitPricePaise: number;
   status: 'open' | 'dispatched' | 'partial' | 'delivered' | 'closed_short' | 'cancelled';
+  cancelReason?: string;
   cylinderIds: string[];
   deliveredIds: string[];
   vehicle: string;
@@ -81,6 +85,10 @@ export interface Order {
     actorId: string;
     notes: string;
   }[];
+  challanSnapshot?: {
+    issuer: { companyName: string; address: string; gstin: string };
+    recipient: { name: string; address: string; city: string; gstin: string };
+  };
 }
 export interface ReturnPickup {
   id: string;
@@ -90,6 +98,7 @@ export interface ReturnPickup {
   vehicle: string;
   cylinderIds: string[];
   receivedIds: string[];
+  reversedIds?: string[];
   createdAt: string;
   notes: string;
 }
@@ -98,15 +107,20 @@ export interface Batch {
   number: string;
   branchId: string;
   gas: Gas;
+  supplierId?: string;
   cylinderIds: string[];
   source: string;
   operator: string;
+  fillOperator?: string;
+  notes?: string;
   status: 'awaiting_release' | 'released' | 'recalled';
   createdAt: string;
   releasedAt?: string;
   releasedBy?: string;
   certificate?: string;
   qualityNotes?: string;
+  rejectedCylinderIds?: string[];
+  recipientTrace?: { cylinderId: string; partyId: string; orderId: string; at: string }[];
 }
 export interface Movement {
   id: string;
@@ -153,6 +167,9 @@ export interface Invoice {
   taxPaise: number;
   totalPaise: number;
   paidPaise: number;
+  creditedPaise?: number;
+  appliedCreditPaise?: number;
+  creditOffsetPaise?: number;
   status: 'issued' | 'partial' | 'paid' | 'credited';
   notes: string;
   creditedInvoiceId?: string;
@@ -165,11 +182,15 @@ export interface Receipt {
   partyId: string;
   invoiceId?: string;
   amountPaise: number;
-  method: 'cash' | 'upi' | 'bank';
+  method: 'cash' | 'upi' | 'bank' | 'credit';
   reference: string;
   at: string;
   actorId: string;
-  kind: 'payment' | 'deposit' | 'refund';
+  kind: 'payment' | 'deposit' | 'refund' | 'credit_refund' | 'credit_allocation';
+  creditInvoiceId?: string;
+  reason?: string;
+  reversedAt?: string;
+  reversalReason?: string;
 }
 export interface AuditEvent {
   id: string;
@@ -195,7 +216,9 @@ export interface Settings {
   address: string;
   gstin: string;
   defaultTaxBps: number;
+  supplierOwnedRental?: 'charge' | 'no_charge';
   mode: 'demo' | 'live';
+  version?: number;
 }
 export interface AppState {
   revision: number;

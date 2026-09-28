@@ -32,7 +32,7 @@ export default function ScannerInput({
                 const text = result.getText().trim();
                 if (!text) return;
                 control.stop();
-                setValue(text);
+                setValue('');
                 callback.current(text);
                 setActive(false);
               }
@@ -73,12 +73,13 @@ export default function ScannerInput({
           value={value}
           onChange={(event) => {
             setValue(event.target.value);
-            callback.current(event.target.value.trim());
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault();
-              callback.current(value.trim());
+              const scanned = value.trim();
+              if (scanned) callback.current(scanned);
+              setValue('');
             }
           }}
           autoComplete="off"

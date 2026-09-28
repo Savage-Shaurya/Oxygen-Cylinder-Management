@@ -169,7 +169,16 @@ export function createSeedState(at = new Date().toISOString()): AppState {
       manufacturer: n % 3 === 0 ? 'Demo Alloy Works' : 'Demo Cylinder Works',
       gas,
       size,
-      ownerId: owners[n % owners.length],
+      ownerId:
+        n > 50
+          ? owners[n % owners.length] === 'p-hospital-1'
+            ? 'p-hospital-2'
+            : owners[n % owners.length] === 'p-home-1'
+              ? 'p-home-2'
+              : owners[n % owners.length]
+          : n === 4
+            ? 'company'
+            : owners[n % owners.length],
       branchId,
       custody: 'plant',
       custodianId: branchId,
@@ -215,6 +224,36 @@ export function createSeedState(at = new Date().toISOString()): AppState {
     };
     batches.push(b);
     for (const id of b.cylinderIds) cylinders.find((c) => c.id === id)!.batchId = b.id;
+  }
+  for (const [id, branchId] of [
+    ['batch-industrial-delhi', 'b-delhi'],
+    ['batch-industrial-faridabad', 'b-faridabad'],
+  ] as const) {
+    const members = cylinders.filter(
+      (c) =>
+        c.branchId === branchId &&
+        c.gas === 'Industrial oxygen' &&
+        c.contents === 'full' &&
+        c.condition === 'serviceable',
+    );
+    if (!members.length) continue;
+    const b: Batch = {
+      id,
+      number: `DEMO-${id.toUpperCase()}`,
+      branchId,
+      gas: 'Industrial oxygen',
+      cylinderIds: members.map((c) => c.id),
+      source: 'Demo industrial fill',
+      operator: 'u-ops',
+      status: 'released',
+      createdAt: `${before(12)}T10:00:00.000Z`,
+      releasedAt: `${before(12)}T13:00:00.000Z`,
+      releasedBy: 'u-quality',
+      certificate: `DEMO-QC-${id}`,
+      qualityNotes: 'Synthetic quality release',
+    };
+    batches.push(b);
+    for (const c of members) c.batchId = b.id;
   }
   const orders: Order[] = [
     {
@@ -321,6 +360,17 @@ export function createSeedState(at = new Date().toISOString()): AppState {
   const vehicle = cylinders.find((c) => c.id === 'c-004')!;
   vehicle.custody = 'vehicle';
   vehicle.custodianId = 'o-partial-1';
+  for (const order of orders.filter((o) => o.cylinderIds.length)) {
+    const party = parties.find((p) => p.id === order.partyId)!;
+    order.challanSnapshot = {
+      issuer: {
+        companyName: 'Batra Oxygen — Demo',
+        address: 'Synthetic demonstration address, Delhi NCR',
+        gstin: 'DEMO-GSTIN',
+      },
+      recipient: { name: party.name, address: party.address, city: party.city, gstin: party.gstin },
+    };
+  }
   const invoices: Invoice[] = [
     {
       id: 'inv-seed-1',
@@ -398,6 +448,20 @@ export function createSeedState(at = new Date().toISOString()): AppState {
       notes: 'Synthetic demonstration invoice',
     },
   ];
+  for (const invoice of invoices) {
+    const party = parties.find((p) => p.id === invoice.partyId)!;
+    invoice.billTo = {
+      name: party.name,
+      address: party.address,
+      city: party.city,
+      gstin: party.gstin,
+    };
+    invoice.issuer = {
+      companyName: 'Batra Oxygen — Demo',
+      address: 'Synthetic demonstration address, Delhi NCR',
+      gstin: 'DEMO-GSTIN',
+    };
+  }
   const receipts: Receipt[] = [
     {
       id: 'receipt-seed-1',
@@ -508,6 +572,7 @@ export function createSeedState(at = new Date().toISOString()): AppState {
         actorName: 'Demo Driver',
         reference: order.id,
         notes: 'Synthetic delivery proof',
+        before: { batchId: cylinder.batchId },
       });
     }
   }

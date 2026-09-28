@@ -5,8 +5,8 @@ export interface StoredUser extends User {
   passwordHash: string;
 }
 export function hashPassword(password: string): string {
-  if (password.length < 12 || password.length > 256)
-    throw new Error('Password must be 12–256 characters');
+  if (password.length < 12 || password.length > 256 || !/[\p{L}\p{N}\p{S}\p{P}]/u.test(password))
+    throw new Error('Password must be 12–256 characters and contain a non-space character');
   const salt = randomBytes(16);
   const hash = scryptSync(password, salt, 64);
   return `${salt.toString('hex')}:${hash.toString('hex')}`;

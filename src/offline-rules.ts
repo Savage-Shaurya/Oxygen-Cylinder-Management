@@ -27,6 +27,8 @@ export function validateQueuedDelivery(
     return record.error || 'This delivery needs office review before it can be posted.';
   return null;
 }
-export function canRetryDelivery(status: number): boolean {
-  return status === 0 || status >= 500;
+export function canRetryDelivery(status: number, message = ''): boolean {
+  return (
+    status === 0 || status === 401 || (status === 403 && /csrf/i.test(message)) || status >= 500
+  );
 }

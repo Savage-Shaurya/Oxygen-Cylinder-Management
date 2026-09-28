@@ -1,0 +1,17 @@
+# Remaining API and legacy review
+
+Party and settings edits now carry an entity version. A saved edit increments that entity's version; a second edit made from the same version receives HTTP 409. New forms send `payload.expectedVersion` and omit the organization revision, so an unrelated order, receipt, or customer action does not make the edit stale. Older callers that explicitly send `expectedRevision` keep their existing organization-wide conflict behavior. An overwrite with neither version is rejected. Legacy party and settings rows without a version start at version 1 when edited; no database rewrite is needed.
+
+The server still stores one JSON document per organization in SQLite and serializes each write in a short transaction. Entity version checks prevent lost party/settings overwrites but do not turn persistence into entity-level storage. Initial bootstrap and JSON export still read and transmit the full scoped state. Pagination would require stable server-side indexes, a client data-loading contract, and updates to cross-page selectors and exports. This remains an architecture change outside a bounded demo repair; the existing action delta reduces routine response size only.
+
+`scripts/maintenance.ts` reviews a named existing database with a read-only SQLite connection. It reports invoice and dispatched challan identity snapshots that are absent, delivery movements without a batch snapshot, invalid user configuration, missing active organization-wide admin, and file permissions. It does not infer a batch recipient from the current cylinder or current party: those would invent historical facts. By default the command changes nothing:
+
+```sh
+npx tsx scripts/maintenance.ts --db /absolute/path/to/ctms.sqlite
+```
+
+To include a named backup file in the permission report, pass `--backup /absolute/path/to/backup.sqlite`. `--apply-permissions` explicitly changes mode to `0600` on the named database, its existing `-wal` and `-shm` sidecars, and the named existing backup, after rejecting symlinks and non-regular files. It does not change database records, repair account roles, or backfill snapshots. Review the report and take a verified backup before any separate historical migration or account repair. No existing user database was opened or changed during this work; tests use synthetic temporary databases.
+
+For the guided hands-on test, start the separate persistent synthetic workspace with `npm run demo:test` and open `http://localhost:3004`. It uses only `data/testing-demo.sqlite`, separate from the usual port 5173 workspace and the disposable browser QA database. On first start it creates demo records; later starts reuse the same test records. If the named file already exists but is empty, incomplete, or is not a demo database, startup refuses it without reseeding. Stop the process normally when finished; the test records remain for the next session. The command does not read `CTMS_DB_PATH` as a database override.
+
+Focused checks: `npx tsx --test tests/api.test.ts tests/maintenance.test.ts` and `npm run typecheck`. The relevant tests demonstrate that an unrelated action leaves a party/settings edit valid, a stale edit of the same entity returns 409, unversioned overwrites fail, and the maintenance dry run preserves file data and permissions. Finance API regressions also check the new correction commands against role and branch scope, cross-customer allocation, prototype action names, and a shared credit-note balance across allocations and refunds.

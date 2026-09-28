@@ -23,17 +23,22 @@ function cookieToken(req: Request): string | undefined {
 }
 function csvCell(v: unknown): string {
   const raw = String(v ?? '');
-  const safe = /^[\s]*[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  const safe = /^[\s]*[=+\-@\t\r＝＋－＠]/u.test(raw) ? `'${raw}` : raw;
   return `"${safe.replaceAll('"', '""')}"`;
 }
 function scopedAudit(events: AuditEvent[], state: AppState, user: User): AuditEvent[] {
   const branches = new Set(user.branchIds);
+  const partyIds = new Set(
+    state.parties.filter((party) => branches.has(party.branchId)).map((party) => party.id),
+  );
+  const wholeOrganization = state.branches.every((branch) => branches.has(branch.id));
   const ids = new Set<string>([
     ...state.cylinders.filter((x) => branches.has(x.branchId)).map((x) => x.id),
     ...state.parties.filter((x) => branches.has(x.branchId)).map((x) => x.id),
     ...state.orders.filter((x) => branches.has(x.branchId)).map((x) => x.id),
     ...state.batches.filter((x) => branches.has(x.branchId)).map((x) => x.id),
     ...state.invoices.filter((x) => branches.has(x.branchId)).map((x) => x.id),
+    ...state.receipts.filter((x) => partyIds.has(x.partyId)).map((x) => x.id),
     ...(state.pickups ?? []).filter((x) => branches.has(x.branchId)).map((x) => x.id),
   ]);
   for (const exception of state.exceptions)
@@ -41,7 +46,7 @@ function scopedAudit(events: AuditEvent[], state: AppState, user: User): AuditEv
       ids.add(exception.id);
   return events.filter(
     (e) =>
-      !e.entityId ||
+      (!e.entityId && wholeOrganization) ||
       ids.has(e.entityId) ||
       (user.role === 'admin' &&
         state.branches.every((b) => user.branchIds.includes(b.id)) &&
@@ -89,6 +94,7 @@ function scopedState(state: AppState, user: User): AppState {
         creditLimitPaise: 0,
         dailyRentalPaise: 0,
         depositPaise: 0,
+        freeDays: 0,
         gstin: '',
       })),
       orders: orders.map((o) => ({ ...o, unitPricePaise: 0 })),
@@ -138,7 +144,14 @@ function scopedState(state: AppState, user: User): AppState {
     orders: ownOrders,
     parties: parties
       .filter((p) => ownPartyIds.has(p.id))
-      .map((p) => ({ ...p, creditLimitPaise: 0, dailyRentalPaise: 0, depositPaise: 0, gstin: '' })),
+      .map((p) => ({
+        ...p,
+        creditLimitPaise: 0,
+        dailyRentalPaise: 0,
+        depositPaise: 0,
+        freeDays: 0,
+        gstin: '',
+      })),
     cylinders: cylinders.filter(
       (c) => ownCylinderIds.has(c.id) && !receivedPickupIds.has(c.id) && !unloadedIds.has(c.id),
     ),
@@ -153,10 +166,60 @@ function scopedState(state: AppState, user: User): AppState {
     settings: { ...shared.settings, address: '', gstin: '', defaultTaxBps: 0 },
   };
 }
+const stateCollections = [
+  'branches',
+  'cylinders',
+  'parties',
+  'orders',
+  'batches',
+  'movements',
+  'rentals',
+  'invoices',
+  'pickups',
+  'receipts',
+  'audit',
+  'exceptions',
+] as const;
+function stateDelta(before: AppState, after: AppState) {
+  const changed: Record<string, unknown[]> = {};
+  const removed: Record<string, string[]> = {};
+  for (const name of stateCollections) {
+    const prior = new Map(
+      ((before[name] ?? []) as Array<{ id: string }>).map((item) => [item.id, item]),
+    );
+    const next = new Map(
+      ((after[name] ?? []) as Array<{ id: string }>).map((item) => [item.id, item]),
+    );
+    const updates = [...next]
+      .filter(([id, item]) => JSON.stringify(prior.get(id)) !== JSON.stringify(item))
+      .map(([, item]) => item);
+    const deletions = [...prior.keys()].filter((id) => !next.has(id));
+    if (updates.length) changed[name] = updates;
+    if (deletions.length) removed[name] = deletions;
+  }
+  return {
+    baseRevision: before.revision,
+    revision: after.revision,
+    changed,
+    removed,
+    ...(JSON.stringify(before.settings) !== JSON.stringify(after.settings)
+      ? { settings: after.settings }
+      : {}),
+  };
+}
 export function createApp(options: StoreOptions = {}) {
-  const production = options.production ?? process.env.NODE_ENV === 'production';
+  const production =
+    options.production ??
+    (options.demoMode === false ||
+      process.env.DEMO_MODE === 'false' ||
+      process.env.NODE_ENV === 'production');
   const store = new Store({ ...options, production });
   const app = express();
+  // Only explicitly listed proxy networks may supply X-Forwarded-* headers.
+  const trustedProxies = process.env.CTMS_TRUST_PROXY_CIDRS?.split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (trustedProxies?.length) app.set('trust proxy', trustedProxies);
   app.locals.store = store;
   app.disable('x-powered-by');
   app.use(helmet({ contentSecurityPolicy: production ? undefined : false }));
@@ -200,9 +263,11 @@ export function createApp(options: StoreOptions = {}) {
         throw new StoreError('Invalid origin', 403);
       }
       const host = req.get('host');
-      const same = url.host === host;
+      const expectedScheme = req.secure ? 'https:' : 'http:';
+      const same = url.host === host && url.protocol === expectedScheme;
       const devAllowed =
         !production &&
+        url.protocol === 'http:' &&
         ['127.0.0.1', 'localhost'].includes(url.hostname) &&
         url.port === '5173' &&
         ['127.0.0.1:3001', 'localhost:3001'].includes(host ?? '');
@@ -246,7 +311,10 @@ export function createApp(options: StoreOptions = {}) {
     '/api/login',
     originGuard,
     safe((req, res) => {
-      const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+      const email =
+        typeof req.body?.email === 'string'
+          ? req.body.email.trim().toLowerCase().slice(0, 254)
+          : '';
       const password = typeof req.body?.password === 'string' ? req.body.password : '';
       const emailKey = `email:${req.ip}:${email}`,
         ipKey = `ip:${req.ip}`;
@@ -255,9 +323,9 @@ export function createApp(options: StoreOptions = {}) {
         ipAttempt = loginAttempts.get(ipKey);
       if (
         (emailAttempt && emailAttempt.until > now && emailAttempt.count >= 5) ||
-        (ipAttempt && ipAttempt.until > now && ipAttempt.count >= 20)
+        (ipAttempt && ipAttempt.until > now && ipAttempt.count >= 100)
       )
-        throw new StoreError('Invalid email or password', 429);
+        throw new StoreError('Too many login attempts; try again later', 429);
       const user = store.getUserByEmail(email);
       const valid = verifyPassword(password, user?.passwordHash ?? dummyPasswordHash);
       if (!user || !user.active || !valid) {
@@ -266,6 +334,7 @@ export function createApp(options: StoreOptions = {}) {
         throw new StoreError('Invalid email or password', 401);
       }
       loginAttempts.delete(emailKey);
+      loginAttempts.delete(ipKey);
       const token = randomToken(),
         csrfToken = randomToken();
       store.createSession(user, token, csrfToken);
@@ -320,8 +389,19 @@ export function createApp(options: StoreOptions = {}) {
       )
         throw new StoreError('Invalid action');
       if (user.role === 'auditor') throw new StoreError('Read only role', 403);
+      const before =
+        req.get('prefer') === 'return=delta'
+          ? scopedState(store.getState(user.orgId), user)
+          : undefined;
       const result = store.apply(user, request);
-      res.json({ ...result, state: scopedState(result.state, user) });
+      const after = scopedState(result.state, user);
+      if (before) {
+        res.json({
+          message: result.message,
+          entityId: result.entityId,
+          delta: stateDelta(before, after),
+        });
+      } else res.json({ ...result, state: after });
     }),
   );
   app.get(
@@ -403,6 +483,46 @@ export function createApp(options: StoreOptions = {}) {
       )
         throw new StoreError('Invalid user');
       res.status(201).json(safeUser(store.createUser(actor, body)));
+    }),
+  );
+  app.post(
+    '/api/password',
+    originGuard,
+    requireAuth,
+    csrf,
+    safe((req, res) => {
+      if (
+        typeof req.body?.currentPassword !== 'string' ||
+        typeof req.body?.newPassword !== 'string'
+      )
+        throw new StoreError('Current and new passwords required');
+      store.changePassword(
+        res.locals.user as StoredUser,
+        req.body.currentPassword,
+        req.body.newPassword,
+      );
+      res.clearCookie(cookieName, {
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: production,
+        path: '/',
+      });
+      res.json({ ok: true });
+    }),
+  );
+  app.post(
+    '/api/users/:id/password',
+    originGuard,
+    requireAuth,
+    csrf,
+    safe((req, res) => {
+      if (typeof req.body?.newPassword !== 'string') throw new StoreError('New password required');
+      store.resetPassword(
+        res.locals.user as StoredUser,
+        String(req.params.id),
+        req.body.newPassword,
+      );
+      res.json({ ok: true });
     }),
   );
   app.patch(

@@ -1,8 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, existsSync, rmSync, openSync, closeSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { hashPassword, tokenHash, type StoredUser } from './auth.js';
+import { hashPassword, tokenHash, verifyPassword, type StoredUser } from './auth.js';
 import { createSeedState } from './seed.js';
 import { applyAction } from './domain.js';
 import type {
@@ -37,6 +37,31 @@ const demoRoles: Array<[Role, string, string]> = [
   ['auditor', 'u-auditor', 'Auditor'],
 ];
 const stableHash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+function secureDatabaseFile(path: string) {
+  if (path !== ':memory:' && !existsSync(path)) closeSync(openSync(path, 'wx', 0o600));
+}
+function privateSqliteWrite(write: () => void, path: string) {
+  const oldMask = process.umask(0o077);
+  try {
+    write();
+    chmodSync(path, 0o600);
+  } finally {
+    process.umask(oldMask);
+  }
+}
+function validEmail(email: string): boolean {
+  const normalized = email.trim().toLowerCase();
+  return (
+    normalized.length <= 254 &&
+    /^\S+@\S+\.\S+$/.test(normalized) &&
+    !normalized.endsWith('@batra.demo')
+  );
+}
+function validPassword(password: string): boolean {
+  return (
+    password.length >= 12 && password.length <= 256 && /[\p{L}\p{N}\p{S}\p{P}]/u.test(password)
+  );
+}
 export class Store {
   readonly db: DatabaseSync;
   readonly demoMode: boolean;
@@ -47,18 +72,44 @@ export class Store {
     this.demoMode = options.demoMode ?? (!production && process.env.DEMO_MODE !== 'false');
     const dbPath = options.dbPath ?? process.env.CTMS_DB_PATH ?? 'data/ctms.sqlite';
     if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
+    secureDatabaseFile(dbPath);
     this.db = new DatabaseSync(dbPath);
     this.db.exec(`PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS org_state(org_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, state_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, role TEXT NOT NULL, branch_ids TEXT NOT NULL, active INTEGER NOT NULL, password_hash TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), csrf_token TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), csrf_token TEXT NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS idempotency(org_id TEXT NOT NULL, user_id TEXT NOT NULL, idem_key TEXT NOT NULL, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(org_id,user_id,idem_key));
       CREATE TABLE IF NOT EXISTS user_auth_epoch(user_id TEXT PRIMARY KEY REFERENCES users(id), epoch INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS audit_log(sequence INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT NOT NULL, id TEXT NOT NULL, at TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, action TEXT NOT NULL, entity_id TEXT NOT NULL, summary TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit append only'); END;
       CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit append only'); END;`);
+    const sessionColumns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{
+      name: string;
+    }>;
+    if (!sessionColumns.some((column) => column.name === 'last_seen_at')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0');
+      this.db.prepare('UPDATE sessions SET last_seen_at=?').run(Date.now());
+    }
     const existing = this.db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number };
-    if (existing.n === 0 && this.demoMode) this.seedDemo();
+    if (existing.n === 0 && this.demoMode) {
+      const stateCount = this.db.prepare('SELECT COUNT(*) AS n FROM org_state').get() as {
+        n: number;
+      };
+      if (stateCount.n) {
+        this.db.close();
+        throw new Error('Existing state cannot be seeded with demo accounts');
+      }
+      this.seedDemo();
+    }
+    if (this.demoMode && existing.n > 0) {
+      const states = this.db.prepare('SELECT state_json FROM org_state').all() as {
+        state_json: string;
+      }[];
+      if (states.some((row) => JSON.parse(row.state_json).settings?.mode === 'live')) {
+        this.db.close();
+        throw new Error('Live state cannot run in demo mode');
+      }
+    }
     if (!this.demoMode) {
       if (existing.n === 0 && !options.provisioning)
         throw new Error(
@@ -141,16 +192,28 @@ export class Store {
     ).map((r) => this.rowUser(r));
   }
   createSession(user: User, token: string, csrf: string) {
+    const now = Date.now();
     this.db
-      .prepare('INSERT INTO sessions VALUES (?,?,?,?)')
-      .run(tokenHash(token), user.id, csrf, Date.now() + 12 * 60 * 60 * 1000);
+      .prepare('DELETE FROM sessions WHERE expires_at<=? OR last_seen_at<=?')
+      .run(now, now - 30 * 60_000);
+    this.db
+      .prepare(
+        'INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at,last_seen_at) VALUES (?,?,?,?,?)',
+      )
+      .run(tokenHash(token), user.id, csrf, now + 12 * 60 * 60 * 1000, now);
   }
   session(token: string): { user: StoredUser; csrfToken: string } | undefined {
+    const now = Date.now();
+    const hashed = tokenHash(token);
     const row = this.db
-      .prepare('SELECT user_id,csrf_token FROM sessions WHERE token_hash=? AND expires_at>?')
-      .get(tokenHash(token), Date.now()) as { user_id: string; csrf_token: string } | undefined;
+      .prepare(
+        'SELECT user_id,csrf_token FROM sessions WHERE token_hash=? AND expires_at>? AND last_seen_at>?',
+      )
+      .get(hashed, now, now - 30 * 60_000) as { user_id: string; csrf_token: string } | undefined;
     if (!row) return;
     const user = this.getUser(row.user_id);
+    if (user?.active)
+      this.db.prepare('UPDATE sessions SET last_seen_at=? WHERE token_hash=?').run(now, hashed);
     return user?.active ? { user, csrfToken: row.csrf_token } : undefined;
   }
   revokeSession(token: string) {
@@ -249,6 +312,12 @@ export class Store {
           throw new StoreError('Authorization changed; submit a new request', 403);
         return { message: metadata.message, entityId: metadata.entityId, state: old };
       }
+      if (
+        (request.type === 'party.update' || request.type === 'settings.update') &&
+        request.expectedRevision === undefined &&
+        !Number.isInteger(request.payload?.expectedVersion)
+      )
+        throw new StoreError('Entity version required for overwrite');
       if (request.expectedRevision !== undefined && request.expectedRevision !== old.revision)
         throw new StoreError('State changed; refresh and retry', 409);
       if (request.type === 'order.dispatch' || request.type === 'cylinder.collect') {
@@ -331,7 +400,8 @@ export class Store {
       if (
         !input.name?.trim() ||
         input.name.length > 120 ||
-        !/^\S+@\S+\.\S+$/.test(input.email) ||
+        !validEmail(input.email) ||
+        !validPassword(input.password) ||
         !input.branchIds?.length ||
         input.branchIds.some((id) => !state.branches.some((b) => b.id === id))
       )
@@ -396,6 +466,7 @@ export class Store {
         throw new StoreError('Invalid branches');
       const active = input.active ?? target.active;
       const role = input.role ?? target.role;
+      const nextBranches = [...new Set(input.branchIds ?? target.branchIds)];
       if (id === actor.id && (!active || role !== 'admin'))
         throw new StoreError('Cannot disable your own admin account');
       if (
@@ -405,15 +476,39 @@ export class Store {
         this.getUsers(actor.orgId).filter((u) => u.active && u.role === 'admin').length <= 1
       )
         throw new StoreError('Cannot remove final admin');
+      const allBranches = state.branches.map((branch) => branch.id);
+      const isOrgAdmin = (candidate: StoredUser) =>
+        candidate.active &&
+        candidate.role === 'admin' &&
+        allBranches.every((branch) => candidate.branchIds.includes(branch));
+      if (
+        isOrgAdmin(target) &&
+        (!active ||
+          role !== 'admin' ||
+          !allBranches.every((branch) => nextBranches.includes(branch))) &&
+        this.getUsers(actor.orgId).filter(isOrgAdmin).length <= 1
+      )
+        throw new StoreError('Cannot remove final organization administrator');
+      const authorizationReduced =
+        (target.active && !active) ||
+        role !== target.role ||
+        target.branchIds.some((branch) => !nextBranches.includes(branch));
+      const changed =
+        active !== target.active ||
+        role !== target.role ||
+        JSON.stringify(nextBranches) !== JSON.stringify(target.branchIds);
+      if (!changed) return target;
       this.db
         .prepare('UPDATE users SET active=?,role=?,branch_ids=? WHERE id=?')
-        .run(Number(active), role, JSON.stringify(input.branchIds ?? target.branchIds), id);
-      this.db
-        .prepare(
-          'INSERT INTO user_auth_epoch(user_id,epoch) VALUES (?,1) ON CONFLICT(user_id) DO UPDATE SET epoch=epoch+1',
-        )
-        .run(id);
-      this.revokeUserSessions(id);
+        .run(Number(active), role, JSON.stringify(nextBranches), id);
+      if (authorizationReduced) {
+        this.db
+          .prepare(
+            'INSERT INTO user_auth_epoch(user_id,epoch) VALUES (?,1) ON CONFLICT(user_id) DO UPDATE SET epoch=epoch+1',
+          )
+          .run(id);
+        this.revokeUserSessions(id);
+      }
       this.recordManagementAudit(actor.orgId, {
         id: randomUUID(),
         at: new Date().toISOString(),
@@ -426,8 +521,56 @@ export class Store {
       return this.getUser(id)!;
     });
   }
+  changePassword(actor: StoredUser, currentPassword: string, newPassword: string): void {
+    if (!validPassword(newPassword))
+      throw new StoreError('Password must be 12–256 characters and contain a non-space character');
+    this.transaction(() => {
+      const current = this.getUser(actor.id);
+      if (!current?.active || !verifyPassword(currentPassword, current.passwordHash))
+        throw new StoreError('Current password is incorrect', 403);
+      this.setPassword(current, newPassword, actor);
+    });
+  }
+  resetPassword(actor: StoredUser, id: string, newPassword: string): void {
+    if (actor.role !== 'admin') throw new StoreError('Forbidden', 403);
+    if (actor.id === id)
+      throw new StoreError('Use current password to change your own password', 400);
+    if (!validPassword(newPassword))
+      throw new StoreError('Password must be 12–256 characters and contain a non-space character');
+    this.transaction(() => {
+      const target = this.getUser(id);
+      if (
+        !target ||
+        target.orgId !== actor.orgId ||
+        !target.branchIds.every((branch) => actor.branchIds.includes(branch))
+      )
+        throw new StoreError('User not found', 404);
+      this.setPassword(target, newPassword, actor);
+    });
+  }
+  private setPassword(target: StoredUser, password: string, actor: StoredUser): void {
+    this.db
+      .prepare('UPDATE users SET password_hash=? WHERE id=?')
+      .run(hashPassword(password), target.id);
+    this.db
+      .prepare(
+        'INSERT INTO user_auth_epoch(user_id,epoch) VALUES (?,1) ON CONFLICT(user_id) DO UPDATE SET epoch=epoch+1',
+      )
+      .run(target.id);
+    this.revokeUserSessions(target.id);
+    this.recordManagementAudit(actor.orgId, {
+      id: randomUUID(),
+      at: new Date().toISOString(),
+      actorId: actor.id,
+      actorName: actor.name,
+      action: actor.id === target.id ? 'user.password_change' : 'user.password_reset',
+      entityId: target.id,
+      summary:
+        actor.id === target.id ? 'User changed own password' : `Password reset for ${target.email}`,
+    });
+  }
   backup(destination: string) {
-    this.db.prepare('VACUUM INTO ?').run(destination);
+    privateSqliteWrite(() => this.db.prepare('VACUUM INTO ?').run(destination), destination);
   }
 }
 
@@ -451,7 +594,7 @@ export function provisionDatabase(dbPath: string, config: ProvisionConfig, passw
     config.branches.length < 1 ||
     config.branches.length > 100 ||
     !config.admin?.name?.trim() ||
-    !/^\S+@\S+\.\S+$/.test(config.admin.email)
+    !validEmail(config.admin.email)
   )
     throw new StoreError('Invalid provisioning configuration');
   const branchIds = new Set<string>();
@@ -555,18 +698,19 @@ export function restoreSnapshot(sourcePath: string, destinationPath: string): vo
       if (!found) throw new StoreError('Snapshot is not a CTMS database');
     }
     mkdirSync(dirname(destinationPath), { recursive: true });
-    source.prepare('VACUUM INTO ?').run(destinationPath);
+    privateSqliteWrite(() => source.prepare('VACUUM INTO ?').run(destinationPath), destinationPath);
   } finally {
     source.close();
   }
   try {
-    const restored = new DatabaseSync(destinationPath, { readOnly: true });
+    const restored = new DatabaseSync(destinationPath);
     try {
       if (
         (restored.prepare('PRAGMA integrity_check').get() as { integrity_check: string })
           .integrity_check !== 'ok'
       )
         throw new StoreError('Restored database integrity check failed');
+      restored.prepare('DELETE FROM sessions').run();
     } finally {
       restored.close();
     }

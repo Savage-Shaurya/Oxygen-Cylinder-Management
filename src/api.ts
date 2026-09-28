@@ -1,4 +1,4 @@
-import type { ActionRequest, ActionResult, Bootstrap } from '../shared/types';
+import type { ActionRequest, ActionResult, AppState, Bootstrap } from '../shared/types';
 
 let csrfToken = '';
 let currentUserId = '';
@@ -82,6 +82,7 @@ export async function act(
   type: string,
   payload: Record<string, unknown>,
   expectedRevision?: number,
+  state?: AppState,
 ): Promise<ActionResult> {
   const digest = await crypto.subtle.digest(
     'SHA-256',
@@ -107,7 +108,85 @@ export async function act(
     /* Request remains idempotent within this attempt. */
   }
   try {
-    const result = await submitAction({ type, payload, ...identity });
+    const action = { type, payload, ...identity };
+    type Wire = ActionResult & {
+      delta?: {
+        baseRevision: number;
+        revision: number;
+        changed: Record<string, { id: string }[]>;
+        removed: Record<string, string[]>;
+        settings?: AppState['settings'];
+      };
+    };
+    const wire: Wire = state
+      ? await request<
+          ActionResult & {
+            delta?: {
+              baseRevision: number;
+              revision: number;
+              changed: Record<string, { id: string }[]>;
+              removed: Record<string, string[]>;
+              settings?: AppState['settings'];
+            };
+          }
+        >('/actions', {
+          method: 'POST',
+          headers: { Prefer: 'return=delta' },
+          body: JSON.stringify(action),
+        })
+      : await submitAction(action);
+    let result: ActionResult;
+    if ('delta' in wire && wire.delta && state) {
+      const delta = wire.delta;
+      if (delta.baseRevision !== state.revision) {
+        result = { ...wire, state: (await bootstrap()).state };
+      } else {
+        const next = structuredClone(state);
+        for (const key of Object.keys(delta.changed)) {
+          if (
+            ![
+              'branches',
+              'cylinders',
+              'parties',
+              'orders',
+              'batches',
+              'movements',
+              'rentals',
+              'invoices',
+              'receipts',
+              'audit',
+              'exceptions',
+              'pickups',
+            ].includes(key)
+          )
+            continue;
+          const record = next as unknown as Record<string, { id: string }[]>;
+          const changes = new Map(delta.changed[key].map((item) => [item.id, item]));
+          const removed = new Set(delta.removed[key] || []);
+          const retained = (record[key] || [])
+            .filter((item) => !removed.has(item.id))
+            .map((item) => {
+              const replacement = changes.get(item.id);
+              changes.delete(item.id);
+              return replacement || item;
+            });
+          record[key] = ['audit', 'movements'].includes(key)
+            ? [...changes.values(), ...retained]
+            : [...retained, ...changes.values()];
+        }
+        // A collection may contain removals without changed rows.
+        for (const key of Object.keys(delta.removed)) {
+          if (Object.hasOwn(delta.changed, key) || !Object.hasOwn(next, key)) continue;
+          const record = next as unknown as Record<string, { id: string }[]>;
+          if (Array.isArray(record[key]))
+            record[key] = record[key].filter((item) => !delta.removed[key].includes(item.id));
+        }
+        if (delta.settings) next.settings = delta.settings;
+        next.revision = delta.revision;
+        result = { ...wire, state: next };
+      }
+    } else result = wire;
+
     try {
       sessionStorage.removeItem(storageKey);
     } catch {

@@ -62,9 +62,13 @@ export function Modal({
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const first = dialog.current?.querySelector<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+      'input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
     );
-    (first || dialog.current)?.focus();
+    (
+      first ||
+      dialog.current?.querySelector<HTMLElement>('button:not([disabled])') ||
+      dialog.current
+    )?.focus();
     return () => {
       if (previous?.isConnected) previous.focus();
     };
