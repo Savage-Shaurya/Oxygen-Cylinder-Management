@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import ScannerInput from '../ScannerInput';
+import { updateFormValues, declaredFormValues } from './form-values';
 import { Button, Field, Modal } from './UI';
 
 export type Option = { value: string; label: string; disabled?: boolean };
@@ -79,11 +80,7 @@ export function ActionForm({
   }, []);
 
   function set(name: string, value: unknown) {
-    setValues((previous) => ({
-      ...previous,
-      [name]: value,
-      ...(['branchId', 'partyId', 'supplierId', 'gas'].includes(name) ? { cylinderIds: [] } : {}),
-    }));
+    setValues((previous) => updateFormValues(previous, name, value, fields));
     setError('');
   }
   async function submit(event: FormEvent) {
@@ -91,7 +88,7 @@ export function ActionForm({
     setError('');
     setBusy(true);
     try {
-      await onSubmit(values);
+      await onSubmit(declaredFormValues(values, fields));
       onClose();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Could not save. Please try again.');
@@ -103,7 +100,7 @@ export function ActionForm({
     setError('');
     setBusy(true);
     try {
-      await alternate?.onSubmit(values);
+      await alternate?.onSubmit(declaredFormValues(values, fields));
       onClose();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Could not save on this device.');
