@@ -295,14 +295,14 @@ export default function App() {
   if (loading)
     return (
       <div className="loading-screen">
-        <div className="brand-symbol">B</div>
+        <div className="brand-symbol">C</div>
         <span>Opening workspace…</span>
       </div>
     );
   if (bootFailure && !session)
     return (
       <div className="loading-screen unavailable-screen">
-        <div className="brand-symbol">B</div>
+        <div className="brand-symbol">C</div>
         <div>
           <h1>Workspace temporarily unavailable</h1>
           <p>Could not connect to the local service. Your session has not been signed out.</p>
@@ -1346,7 +1346,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = path.includes('csv') ? 'cylinders.csv' : 'batra-operations.json';
+    a.download = path.includes('csv') ? 'cylinders.csv' : 'cylvero-operations.json';
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -1556,9 +1556,9 @@ export default function App() {
       <aside className={`sidebar ${menu ? 'sidebar-open' : ''}`}>
         <div className="sidebar-top">
           <div className="brand">
-            <div className="brand-symbol">B</div>
+            <div className="brand-symbol">C</div>
             <div>
-              <strong>Batra Oxygen</strong>
+              <strong>Cylvero</strong>
               <small>Operations workspace</small>
             </div>
           </div>
@@ -1721,8 +1721,8 @@ function Login({
     <div className="login-screen">
       <div className="login-panel">
         <div className="login-brand">
-          <div className="brand-symbol">B</div>
-          <span>Batra Oxygen</span>
+          <div className="brand-symbol">C</div>
+          <span>Cylvero</span>
         </div>
         <div className="login-copy">
           <div className="eyebrow">Operations workspace</div>
@@ -1739,7 +1739,7 @@ function Login({
         <div className="login-footer">
           {mode === 'demo'
             ? 'Local demonstration · Synthetic data only'
-            : 'Batra Oxygen operations'}
+            : 'Cylvero · Cylinder operations'}
         </div>
       </div>
       <div className="login-form-wrap">

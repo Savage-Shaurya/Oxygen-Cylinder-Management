@@ -1,4 +1,6 @@
-# Batra Oxygen Operations
+# Cylvero
+
+**Every cylinder. Accounted for.**
 
 A working cylinder operations application for an Indian oxygen manufacturer and distributor, including hospital and home-care supply. The local workspace uses **synthetic demonstration records**. Real deployments require the [production acceptance register](docs/planning/production-acceptance.md).
 
