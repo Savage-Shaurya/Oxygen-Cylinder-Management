@@ -1,0 +1,58 @@
+# Command and HTTP contract
+
+All money values are integer paise. Date-only values YYYY-MM-DD; event timestamps ISO UTC. Server never trusts actor, company, branch authorization or calculated totals from client. Payload fields below required unless marked optional. applyAction(state, request, context): ActionResult in server/domain.ts; throws DomainError(message,status=400). Pure function clones state, increments revision once, prepends audit event, and records cylinder movement/version for transitions. Export createSeedState(now?:string) from server/seed.ts.
+
+## HTTP
+
+- GET /api/health -> {ok:true,mode:'demo'|'live'}
+- POST /api/login {email,password} -> Bootstrap; httpOnly sameSite session cookie; csrfToken returned.
+- GET /api/bootstrap -> Bootstrap, authenticated and scoped state; users includes safe permitted identities only.
+- POST /api/logout with X-CSRF-Token.
+- POST /api/actions ActionRequest with X-CSRF-Token -> {state,message,entityId?}. Idempotency scoped to user/org; same key/different payload rejected. expectedRevision optional: stale returns409. State filtered before response.
+- GET /api/export -> JSON operational snapshot (admin/auditor only), attachment download; no password/session records.
+- GET /api/cylinders.csv -> escaped CSV allowed scoped staff, not driver.
+- POST /api/users {name,email,password,role,branchIds} (admin), PATCH /api/users/:id {active?,role?,branchIds?} (admin); CSRF, audit, session invalidation. Prevent self-disable or removing final active admin.
+- GET /api/audit -> protected persistent audit records (admin/auditor).
+
+Server errors JSON {error:string}. Client api.ts exports request<T>(path, options?), login(email,password), bootstrap(), logout(), act(type,payload,expectedRevision?) functions. UI can use request directly if needed. Root owns src/api.ts, helpers.ts and offline.ts; communicate interfaces before edits.
+
+## Domain commands
+
+| type               | payload                                                                                                                                                          | roles                                                          |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| cylinder.register  | serial,tag,manufacturer,gas,size,ownerId,branchId,testDue,lastTest,certificate; contents? default empty                                                          | admin,operations                                               |
+| cylinder.inspect   | cylinderId,version,condition ('serviceable','quarantine','testing','retired'),notes; testDue?,lastTest?,certificate?                                             | admin,quality                                                  |
+| cylinder.retag     | cylinderId,version,tag,reason                                                                                                                                    | admin,operations                                               |
+| party.create       | name,type,contact,phone,address,city,gstin,branchId,creditLimitPaise,dailyRentalPaise,freeDays,depositPaise                                                      | admin,operations,finance                                       |
+| party.update       | partyId, fields from party.create except id                                                                                                                      | admin,finance (commercial values apply to future rentals only) |
+| order.create       | partyId,branchId,gas,size,quantity,priority,dueDate,notes,unitPricePaise                                                                                         | admin,operations                                               |
+| order.cancel       | orderId,reason (only open)                                                                                                                                       | admin,operations                                               |
+| order.dispatch     | orderId,cylinderIds[],vehicle,driverId                                                                                                                           | admin,operations                                               |
+| order.deliver      | orderId,cylinderIds[] accepted subset of not-yet-delivered manifest,recipient,notes                                                                              | admin,operations,assigned driver                               |
+| cylinder.return    | cylinderIds[],partyId,contents ('empty','full','partial','unknown'),notes                                                                                        | admin,operations (not driver; warehouse receipt)               |
+| cylinder.collect   | partyId,cylinderIds[],vehicle,driverId,notes (customer to vehicle; warehouse receipt still required)                                                             | admin,operations,currently assigned driver                     |
+| return.discrepancy | branchId,serial,notes (exception only; no stock/balance mutation)                                                                                                | admin,operations                                               |
+| order.unload       | orderId,cylinderIds[] remaining vehicle units,notes                                                                                                              | admin,operations                                               |
+| batch.create       | gas,branchId,cylinderIds[],source,operator                                                                                                                       | admin,operations                                               |
+| batch.release      | batchId,certificate,qualityNotes                                                                                                                                 | admin,quality                                                  |
+| batch.recall       | batchId,reason                                                                                                                                                   | admin,quality                                                  |
+| supplier.send      | supplierId,cylinderIds[],reference,notes                                                                                                                         | admin,operations                                               |
+| supplier.receive   | supplierId,cylinderIds[],reference,gas,notes (creates awaiting-release batch, cannot bypass QC)                                                                  | admin,operations                                               |
+| purchase.receive   | supplierId,branchId,gas,reference,cylinders:[{serial,tag,manufacturer,size,ownerId,testDue,lastTest,certificate}],notes (new assets plus awaiting-release batch) | admin,operations                                               |
+| finance.invoice    | orderId,taxBps,dueDate,notes (only delivered quantities, one invoice per order; prevent further delivery on invoiced order unless credited)                      | admin,finance                                                  |
+| finance.rental     | partyId,periodStart,periodEnd,taxBps,dueDate (non-overlapping rental periods; dates inclusive, interval end exclusive, free days from original start)            | admin,finance                                                  |
+| finance.receipt    | invoiceId,amountPaise,method,reference (positive <= outstanding; globally reject duplicate noncash reference per party/method)                                   | admin,finance                                                  |
+| finance.deposit    | partyId,amountPaise,method,reference                                                                                                                             | admin,finance                                                  |
+| finance.refund     | partyId,amountPaise,method,reference,reason (cannot exceed deposit balance)                                                                                      | admin,finance                                                  |
+| finance.credit     | invoiceId,reason (full credit only, reject if payments allocated; preserve original)                                                                             | admin,finance                                                  |
+| exception.resolve  | exceptionId,resolution                                                                                                                                           | admin,operations,quality                                       |
+| settings.update    | companyName,address,gstin,defaultTaxBps                                                                                                                          | admin                                                          |
+| cylinders.import   | rows:[same fields as cylinder.register] (max500, atomic reject invalid/duplicates; use idempotency key)                                                          | admin,operations                                               |
+
+Rules: enforce user.branchIds includes every referenced branch. Cross-branch party/order/cylinders rejected. ownerId 'company' or existing party; custodianId plant=branchId, customer/supplier=partyId, vehicle=orderId or return pickup ID. New cylinder inspection_due, never dispatch until inspection + valid test/cert and released batch when full. Filling requires serviceable empty at plant not overdue and no active batch. Awaiting-release batch cannot dispatch; release independent from fill actor (record actor ID in batch operator or additional optional createdBy). Recall holds every linked cylinder even at customer; creates exception for recovery. Retired permanent; testing transition cannot magically grant validity without dated certificate. No future invoice period beyond today's date, no negative money or unsupported gas/unit. Validation limits text size, count <=500, amounts safe integers. Driver can only deliver their own assigned order, no arbitrary custody update. Domain rejects auditor all writes.
+
+Seed user IDs used by demo orders: u-admin, u-ops, u-quality, u-finance, u-driver, u-auditor. orgId=batra. branch IDs b-delhi,b-faridabad. API seeds these roles with demo-only accounts admin@batra.demo, operations@batra.demo, quality@batra.demo, finance@batra.demo, driver@batra.demo, auditor@batra.demo. Local demo password OxygenDemo!2026 (deliberately documented demo credentials; server must refuse demo credentials in production mode). Initial state demo is explicit; do not auto-login or bypass authentication.
+
+## Traceability refinements
+
+Serial uniqueness is manufacturer + serial; current and prior tags remain unique. Retagging preserves previousTags. Test changes require lastTest, testDue and certificate together, with reason notes. Every cylinder movement records before/after snapshots. Unloading preserves requested quantity and original manifest, adding unloadedIds. Each partial acceptance appends deliveryProofs. Customer-owned cylinders retain zero-rate custody intervals. Collected cylinders remain vehicle-held until warehouse receipt; rental closure occurs on warehouse receipt under the implemented policy. Confirm this policy with the client before use.

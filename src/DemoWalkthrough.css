@@ -1,0 +1,141 @@
+.demo-tour-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #edf5f1;
+  border: 1px solid #c9ddd3;
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: #245846;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.demo-tour-trigger:hover {
+  background: #dfeee6;
+}
+.demo-tour-intro {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.demo-tour-intro span {
+  background: #f0f4f1;
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: #53675b;
+}
+.demo-tour-layout {
+  display: grid;
+  grid-template-columns: 215px minmax(0, 1fr);
+  gap: 26px;
+}
+.demo-tour-layout nav {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.demo-tour-layout nav button {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  text-align: left;
+  padding: 10px;
+  color: #647269;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.demo-tour-layout nav button span {
+  min-width: 23px;
+  font-variant-numeric: tabular-nums;
+}
+.demo-tour-layout nav button[aria-current] {
+  background: #e7f0eb;
+  color: #20503e;
+  font-weight: 650;
+}
+.demo-tour-chapter h3 {
+  font-size: 25px;
+  line-height: 1.2;
+  margin: 12px 0;
+}
+.demo-tour-chapter > p {
+  color: #627068;
+  line-height: 1.65;
+}
+.demo-tour-chapter ol {
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.75;
+}
+.demo-tour-chapter li {
+  padding-left: 3px;
+  margin-bottom: 10px;
+}
+.demo-tour-chapter aside {
+  border-left: 3px solid #76a38e;
+  padding: 12px 15px;
+  background: #f4f7f4;
+  margin: 20px 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.demo-tour-chapter aside p {
+  margin: 5px 0 0;
+}
+.demo-tour-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.demo-tour-chapter .demo-tour-note {
+  font-size: 11px;
+  line-height: 1.6;
+  margin-top: 15px;
+}
+.demo-tour-boundary {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid #e5eae6;
+  color: #6f7d73;
+  font-size: 11px;
+  line-height: 1.65;
+}
+@media (max-width: 640px) {
+  .demo-tour-layout {
+    grid-template-columns: 1fr;
+    gap: 15px;
+  }
+  .demo-tour-layout nav {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .demo-tour-layout nav button {
+    padding: 7px;
+    font-size: 11px;
+  }
+  .demo-tour-chapter h3 {
+    font-size: 22px;
+  }
+  .demo-tour-trigger {
+    font-size: 11px;
+    padding: 8px;
+  }
+}
+
+.demo-tour-body {
+  padding: 22px 24px;
+}
+@media (max-width: 640px) {
+  .demo-tour-body {
+    padding: 18px;
+  }
+}
