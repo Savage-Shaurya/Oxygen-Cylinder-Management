@@ -4,7 +4,13 @@ import { ApiError } from '../api';
 import { updateFormValues, declaredFormValues, friendlyFormError } from './form-values';
 import { Button, Field, Modal } from './UI';
 
-export type Option = { value: string; label: string; disabled?: boolean };
+export type Option = {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  /** Other codes a scanner may read for this option (old tags, serial number). */
+  aliases?: string[];
+};
 export type FormField = {
   name: string;
   label: string;
@@ -246,10 +252,12 @@ export function ActionForm({
                           placeholder="Scan or type a cylinder tag"
                           onScan={(value) => {
                             if (!value) return;
+                            const code = value.toLowerCase();
                             const match = options?.find(
                               (option) =>
                                 option.value === value ||
-                                option.label.split(' · ')[0].toLowerCase() === value.toLowerCase(),
+                                option.label.split(' · ')[0].toLowerCase() === code ||
+                                option.aliases?.some((alias) => alias.toLowerCase() === code),
                             );
                             if (!match) {
                               setError(

@@ -43,6 +43,7 @@ import { request, login, bootstrap, logout, act, ApiError } from './api';
 import { ActionForm, type FormField, type Option } from './components/ActionForm';
 import { Badge, Button, Card, Empty, Modal, PageHeader, Search, Stat } from './components/UI';
 import OfflinePanel from './OfflinePanel';
+import ScannerInput from './ScannerInput';
 import CylinderLabel from './CylinderLabel';
 import PrintChallan from './PrintChallan';
 import DemoWalkthrough from './DemoWalkthrough';
@@ -459,6 +460,8 @@ export default function App() {
     list.map((c) => ({
       value: c.id,
       label: `${c.tag} · ${c.serial} · ${c.size} · ${branch(s, c.branchId)}`,
+      // Old labels and serial plates still scan to the same cylinder.
+      aliases: [...(c.previousTags ?? []), c.serial],
     }));
   const baseFields: FormField[] = [
     { name: 'branchId', label: 'Branch', type: 'select', required: true, options: branchOptions },
@@ -3027,6 +3030,7 @@ function Cylinders({
   canExport: boolean;
   canInspect: boolean;
 }) {
+  const [scanMessage, setScanMessage] = useState('');
   const filtered = items.filter((c) => {
     const q = search.toLowerCase();
     return (
@@ -3085,6 +3089,26 @@ function Cylinders({
         />
       </div>
       <Card>
+        <div className="cylinder-scan">
+          <ScannerInput
+            placeholder="Scan a cylinder label to open it"
+            onScan={(code) => {
+              const key = code.trim().toLowerCase();
+              const found = items.find((c) =>
+                [c.tag, c.serial, c.id, ...(c.previousTags ?? [])].some(
+                  (x) => x.toLowerCase() === key,
+                ),
+              );
+              setScanMessage(found ? '' : `No cylinder found for “${code}”.`);
+              if (found) showDetail(found.id);
+            }}
+          />
+          {scanMessage && (
+            <p role="alert" className="form-error">
+              {scanMessage}
+            </p>
+          )}
+        </div>
         <Toolbar search={search} setSearch={setSearch} placeholder="Search tag, serial, owner…">
           <span className="results-count">{count(filtered.length, 'record')}</span>
         </Toolbar>

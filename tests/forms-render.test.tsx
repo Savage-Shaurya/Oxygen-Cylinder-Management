@@ -157,6 +157,45 @@ test('handheld scanner commits one exact identifier on Enter and clears for the 
   }
 });
 
+test('form scanner accepts a cylinder by current tag, old tag or serial, and reports unknown codes', async () => {
+  let submitted: Record<string, unknown> | undefined;
+  try {
+    const view = render(
+      React.createElement(ActionForm, {
+        title: 'Dispatch',
+        fields: [
+          {
+            name: 'cylinderIds',
+            label: 'Cylinders',
+            type: 'multiselect',
+            options: [
+              { value: 'c-1', label: 'NEW-TAG · SER-1 · B · Delhi', aliases: ['OLD-TAG', 'SER-1'] },
+              { value: 'c-2', label: 'OTHER · SER-2 · B · Delhi', aliases: ['SER-2'] },
+            ],
+          },
+        ],
+        onClose: () => {},
+        onSubmit: async (values) => {
+          submitted = values;
+        },
+      }),
+    );
+    const scan = (code: string) => {
+      const input = screen.getByPlaceholderText('Scan or type a cylinder tag');
+      fireEvent.change(input, { target: { value: code } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+    };
+    scan('old-tag');
+    scan('SER-2');
+    scan('MISSING-1');
+    assert.match(screen.getByRole('alert').textContent ?? '', /No eligible cylinder matches .MISSING-1./);
+    fireEvent.submit(view.container.querySelector('form')!);
+    await waitFor(() => assert.deepEqual(submitted, { cylinderIds: ['c-1', 'c-2'] }));
+  } finally {
+    cleanup();
+  }
+});
+
 test('device save remains available while the browser reports online', async () => {
   let saved = false;
   try {

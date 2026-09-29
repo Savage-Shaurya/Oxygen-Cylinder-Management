@@ -450,6 +450,10 @@ You need three one-cylinder orders for this part.
   - ✅ Both files download.
 - [ ] **91.** Open any of your cylinders → **Print label**.
   - ✅ The label shows the **tag** and a **QR code**. Close it without printing.
+  - Go to **Cylinders**. In the box **Scan a cylinder label to open it**, type `T2-A` (the **old** tag of `T2-A2`) and press **Enter**.
+  - ✅ The details of `T2-A2` open (old labels still work).
+  - If your laptop has a camera: click the **camera button** next to that box, allow the camera, and hold up a label or the QR code on your phone screen.
+  - ✅ That cylinder's details open.
 
 ---
 

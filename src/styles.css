@@ -752,6 +752,12 @@ h3 {
 .filters button:hover {
   color: #22694e;
 }
+.cylinder-scan {
+  padding: 16px 20px 0;
+}
+.cylinder-scan .form-error {
+  margin-top: 8px;
+}
 .table-scroll {
   width: 100%;
   overflow: auto;

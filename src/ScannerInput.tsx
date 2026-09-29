@@ -107,7 +107,8 @@ export default function ScannerInput({
               width: '100%',
               maxHeight: 300,
               borderRadius: 12,
-              objectFit: 'cover',
+              // Show the whole camera view so the full code can be aimed at.
+              objectFit: 'contain',
               background: '#192d26',
             }}
           />
