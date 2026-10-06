@@ -198,6 +198,15 @@ const en = {
   'offline.send': 'Send now',
   'offline.sent': '{n} sent.',
   'offline.needsOffice': '{n} need the office.',
+
+  'gas.medicalShort': 'Medical O₂',
+  'gas.industrialShort': 'Industrial O₂',
+  'back.notBack': 'Not expected back. Give to office.',
+  'back.groupFull': '{customer}, full {n}',
+  'back.groupEmpty': '{customer}, empty {n}',
+  'load.vehicleMissing': 'Truck number?',
+  'fill.why.waiting': 'Already filled. Waiting for check.',
+  'check.next': 'Scan next',
 };
 
 export default en;

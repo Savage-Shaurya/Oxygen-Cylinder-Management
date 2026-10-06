@@ -24,6 +24,7 @@ import {
   ArrowClockwise,
   MagnifyingGlass,
   UploadSimple,
+  HandTap,
 } from '@phosphor-icons/react';
 import type {
   AppState,
@@ -40,7 +41,7 @@ import type {
 } from '../shared/types';
 import { GASES, ROLES } from '../shared/types';
 import { request, login, bootstrap, logout, act, ApiError } from './api';
-import { ActionForm, type FormField, type Option } from './components/ActionForm';
+import { ActionForm, plainOfficeError, type FormField, type Option } from './components/ActionForm';
 import { Badge, Button, Card, Empty, Modal, PageHeader, Search, Stat } from './components/UI';
 import OfflinePanel from './OfflinePanel';
 import ScannerInput from './ScannerInput';
@@ -52,7 +53,13 @@ import { allowedPartyTypes } from './party-options';
 import { availableCredit, creditNoteAvailable, depositBalance } from '../shared/finance';
 import { downloadCylinderImportTemplate, CYLINDER_IMPORT_COLUMNS } from './import-template';
 import { decimalHundredths, invoiceBalance, unbilledOrder, rentalPeriod } from './finance-view';
-import BasicApp, { canSwitchMode, modeFor, storeMode, storedMode, type AppMode } from './basic/BasicApp';
+import BasicApp, {
+  canSwitchMode,
+  modeFor,
+  storeMode,
+  storedMode,
+  type AppMode,
+} from './basic/BasicApp';
 
 type View =
   | 'overview'
@@ -357,7 +364,8 @@ export default function App() {
     setMenu(false);
     setDetail(null);
   }
-  async function run(type: string, payload: Record<string, unknown>) {
+  // `quiet` is for Basic mode, which shows its own result and must not change the office page.
+  async function run(type: string, payload: Record<string, unknown>, quiet = false) {
     const current = latestSession.current;
     if (!current) throw new Error('Session expired. Sign in again.');
     payload = { ...payload };
@@ -369,6 +377,7 @@ export default function App() {
       const updated = { ...current, state: result.state };
       latestSession.current = updated;
       setSession(updated);
+      if (quiet) return result;
       setToast(result.message);
       const destinations: Record<string, View> = {
         'cylinder.register': 'cylinders',
@@ -444,7 +453,7 @@ export default function App() {
     return (
       <BasicApp
         session={session}
-        run={run}
+        run={(type, payload) => run(type, payload, true)}
         refresh={async () => {
           const refreshed = await bootstrap();
           latestSession.current = refreshed;
@@ -2053,7 +2062,7 @@ export default function App() {
     try {
       await exportData(path);
     } catch (e) {
-      setToast(e instanceof Error ? e.message : 'Export failed');
+      setToast(e instanceof Error ? plainOfficeError(e.message) : 'Export failed');
     }
   }
   // CSV imports accept readable names as well as internal codes: "Delhi" or "b-delhi",
@@ -2407,7 +2416,11 @@ export default function App() {
         <nav aria-label="Main navigation">
           {['Workspace', 'Operations', 'People', 'Finance', 'Control'].map((group) => {
             const links = nav.filter(
-              (n) => n.group === group && (n.id !== 'billing' || financialRead),
+              (n) =>
+                n.group === group &&
+                (n.id !== 'billing' || financialRead) &&
+                // Quality staff do not buy or manage suppliers (simplification plan 5.2).
+                (n.id !== 'suppliers' || u.role !== 'quality'),
             );
             return links.length ? (
               <div key={group} className="nav-group">
@@ -2470,8 +2483,13 @@ export default function App() {
               <DemoWalkthrough state={s} user={u} onNavigate={navigate} />
             )}
             {canSwitchMode(u.role) && (
-              <button className="btn button simple-mode" onClick={() => switchMode('basic')}>
-                Simple mode
+              <button
+                className="btn button simple-mode"
+                onClick={() => switchMode('basic')}
+                title="Big pictures for scanning and delivery"
+              >
+                <HandTap size={16} weight="duotone" aria-hidden="true" />
+                <span>Simple mode</span>
               </button>
             )}
             <div className="top-avatar">{u.name[0]}</div>

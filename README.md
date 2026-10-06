@@ -26,6 +26,24 @@ Demo password: `OxygenDemo!2026`.
 | driver@batra.demo | Assigned deliveries and return collection |
 | auditor@batra.demo | Read-only review and export |
 
+## Simple mode (for drivers and godown staff)
+
+Drivers, and operations staff by default, open a **picture-based Simple mode** instead of the office screens. It shows 4 big picture tiles, has no menus or tables, and works in Hindi or English with spoken help. Operations, quality and admin users can switch between modes with **Office mode** / **Simple mode**.
+
+| Role | Tiles |
+|---|---|
+| Driver | Give · Take back · My truck · Scan · Problem |
+| Operations | Came back · Load truck · Scan · Filled · Problem |
+| Quality | Scan · Check |
+
+- **Scanning:** the camera stays open while you scan, and each cylinder fills a dot. No camera, or testing on a laptop? Use **Type code** or **Pick from list**.
+- **Undo:** every save waits **5 seconds with a big UNDO** before anything is sent. Undo means nothing was recorded.
+- **Results:** a green tick or red cross, with a sound, a vibration and a spoken sentence. Errors are shown as four plain-language screens, and the technical text is under **Details**.
+- **Offline:** deliveries made with no network are saved on the phone. A ☁ button sends them later.
+- **Server rules are unchanged:** every save goes through the same command path as Office mode, so permissions, CSRF, retry keys and the audit log behave exactly as before.
+
+The design and the reasons for each choice are in [docs/simplification-plan.md](docs/simplification-plan.md).
+
 ## Guided demonstration
 
 Use **Demo walkthrough** in the app header for eight chapters covering the full operating loop. Follow the [15–20 minute presenter script](docs/demo-walkthrough.md). Create a fresh, isolated rehearsal dataset without overwriting earlier work:
@@ -47,7 +65,7 @@ Stop an existing preview before starting another on the same ports.
 - Role/branch authorization, hashed passwords and sessions, CSRF protection, session revocation, login throttling, atomic writes, revision conflicts, retry-safe command identity and append-only audit records.
 - Search, QR labels, handheld/camera scan input, print challans and exports. Driver delivery evidence can be queued in the current loaded browser and reconciled explicitly after connectivity returns.
 
-The web interface is responsive and uses Indian currency/date formatting. Interface language is English. Offline evidence capture does not provide a cold-start offline application or bypass changed safety rules. Camera, physical scanners and printers require validation on the client's actual devices.
+The web interface is responsive and uses Indian currency/date formatting. Office mode is in English. Simple mode is in Hindi and English, and its Hindi text should be reviewed by a native speaker before go-live. Offline evidence capture does not provide a cold-start offline application or bypass changed safety rules. Camera, physical scanners and printers require validation on the client's actual devices.
 
 ## Verify
 

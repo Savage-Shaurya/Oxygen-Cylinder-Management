@@ -126,6 +126,24 @@ h3 {
 }
 .chip-dot,
 .live-dot,
+.simple-mode {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: #1557b0;
+  background: #eef4fd;
+  border-color: #c9dbf5;
+  font-size: 12px;
+  gap: 6px;
+}
+.simple-mode:hover {
+  background: #e1ecfb;
+  border-color: #9dbde9;
+}
+.simple-mode:focus-visible {
+  outline: 2px solid #1557b0;
+  outline-offset: 2px;
+}
 .sync-dot {
   width: 8px;
   height: 8px;
@@ -1584,6 +1602,9 @@ td strong {
   }
   .sync-pill {
     display: none;
+  }
+  .simple-mode {
+    padding: 0 10px;
   }
   .content {
     padding: 22px 14px 45px;

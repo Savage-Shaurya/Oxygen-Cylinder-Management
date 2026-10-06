@@ -1392,3 +1392,87 @@ button.b-card:active {
     min-height: 220px;
   }
 }
+
+/* ---------- Godown jobs (Came back, Load truck, Filled, Check) ---------- */
+.b-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.b-qty {
+  margin-left: auto;
+  font-size: 26px;
+  font-weight: 900;
+  color: var(--b-ink);
+}
+.b-gas-chip,
+.b-plate-chip,
+.b-fill-gas {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #eef3fb;
+  color: var(--b-blue);
+  font-weight: 800;
+}
+.b-plate-chip {
+  background: #fff4e6;
+  color: var(--b-orange);
+  letter-spacing: 0.04em;
+}
+.b-plate-chip.missing {
+  background: #f1ece1;
+  color: var(--b-ink-2);
+  letter-spacing: 0;
+}
+.b-fill-gas {
+  align-self: center;
+  padding: 8px 16px;
+  font-size: 20px;
+  background: #e6f4ec;
+  color: var(--b-green);
+}
+.b-urgent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--b-red);
+  color: #fff;
+  font-weight: 800;
+}
+.b-driver-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+.b-driver-row > .b-card {
+  flex: 1;
+  min-width: 0;
+}
+.b-change {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 84px;
+  padding: 8px;
+  border: 2px solid var(--b-line);
+  border-radius: 22px;
+  background: #fff;
+  color: var(--b-orange) !important;
+  font-size: 16px;
+  font-weight: 800;
+}
+.b-change:active {
+  transform: scale(0.97);
+}
+.b-check-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}

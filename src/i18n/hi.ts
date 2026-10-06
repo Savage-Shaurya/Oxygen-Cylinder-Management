@@ -199,6 +199,15 @@ const hi: Record<keyof typeof en, string> = {
   'offline.send': 'अभी भेजें',
   'offline.sent': '{n} भेज दिए।',
   'offline.needsOffice': '{n} ऑफ़िस देखेगा।',
+
+  'gas.medicalShort': 'मेडिकल O₂',
+  'gas.industrialShort': 'इंडस्ट्रियल O₂',
+  'back.notBack': 'यह वापस आने वाला नहीं था। ऑफ़िस को दें।',
+  'back.groupFull': '{customer}, भरे {n}',
+  'back.groupEmpty': '{customer}, खाली {n}',
+  'load.vehicleMissing': 'गाड़ी नंबर?',
+  'fill.why.waiting': 'पहले ही भरा है। जाँच बाकी है।',
+  'check.next': 'अगला सिलेंडर',
 };
 
 export default hi;

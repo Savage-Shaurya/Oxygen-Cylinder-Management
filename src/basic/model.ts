@@ -224,3 +224,64 @@ export function badgeHue(name: string) {
   for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
   return hash;
 }
+
+// ---------- Godown helpers for Came back, Load truck, Filled and Check ----------
+
+/** Admins see every branch; everyone else only their own. */
+export const inMyBranches = (user: User, branchId: string) =>
+  user.role === 'admin' || user.branchIds.includes(branchId);
+
+/** Already filled and waiting for quality release (the office "Create batch" rule). */
+export const inAwaitingBatch = (state: AppState, c: Cylinder) =>
+  state.batches.some((b) => b.status === 'awaiting_release' && b.cylinderIds.includes(c.id));
+
+export const gasShort = (gas: Cylinder['gas']): TextKey =>
+  gas === 'Medical oxygen' ? 'gas.medicalShort' : 'gas.industrialShort';
+
+/** Open orders a helper can load, urgent first, then by due date. */
+export function loadableOrders(state: AppState, user: User): Order[] {
+  return state.orders
+    .filter((o) => o.status === 'open' && inMyBranches(user, o.branchId))
+    .sort(
+      (a, b) =>
+        Number(b.priority === 'urgent') - Number(a.priority === 'urgent') ||
+        a.dueDate.localeCompare(b.dueDate) ||
+        a.createdAt.localeCompare(b.createdAt),
+    );
+}
+
+/** The truck last used with a driver: remembered on this phone, else from their latest order. */
+export function lastVehicleOf(state: AppState, driverId: string, remembered: string | null) {
+  if (remembered) return remembered;
+  return (
+    state.orders
+      .filter((o) => o.driverId === driverId && o.vehicle)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]?.vehicle ?? ''
+  );
+}
+
+export type CheckBlock =
+  'check.retired' | 'check.notHere' | 'check.owner' | 'check.goodBlocked' | 'check.recalled';
+
+/**
+ * Why a quality check cannot mark the cylinder Good or Hold, following the server's
+ * inspection rules. Hold is blocked only when the server would refuse any inspection.
+ */
+export function checkBlocks(
+  state: AppState,
+  c: Cylinder,
+): { good: CheckBlock | null; hold: CheckBlock | null } {
+  const any: CheckBlock | null =
+    c.condition === 'retired'
+      ? 'check.retired'
+      : c.custody !== 'plant'
+        ? 'check.notHere'
+        : c.ownerId !== 'company'
+          ? 'check.owner'
+          : null;
+  if (any) return { good: any, hold: any };
+  if (!testValid(c)) return { good: 'check.goodBlocked', hold: null };
+  if (state.batches.find((b) => b.id === c.batchId)?.status === 'recalled')
+    return { good: 'check.recalled', hold: null };
+  return { good: null, hold: null };
+}

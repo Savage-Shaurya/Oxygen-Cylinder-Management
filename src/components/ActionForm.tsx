@@ -4,6 +4,33 @@ import { ApiError } from '../api';
 import { updateFormValues, declaredFormValues, friendlyFormError } from './form-values';
 import { Button, Field, Modal } from './UI';
 
+// A few technical server replies, said in plain English for office users.
+const plainMessages: [RegExp, string][] = [
+  [/^Invalid CSRF token$/, 'Your session expired. Reload the page and try again.'],
+  [/^Authentication required$/, 'Your session has ended. Sign in again.'],
+  [
+    /^State changed; refresh and retry$/,
+    'Someone else just changed this. The latest data has been loaded; please check and try again.',
+  ],
+  [
+    /^(Cylinder|Party|Settings) version changed$/,
+    'Someone else just changed this record. The latest data has been loaded; please check and try again.',
+  ],
+  [/^Forbidden$/, 'Your role cannot do this.'],
+];
+
+/** Plain words for a raw server message; anything not listed is shown unchanged. */
+export function plainOfficeError(message: string): string {
+  return plainMessages.find(([pattern]) => pattern.test(message.trim()))?.[1] ?? message;
+}
+
+/** The text to show for a failed server request (only server replies are reworded). */
+function failureText(failure: Error, fields: Parameters<typeof friendlyFormError>[1]) {
+  return failure instanceof ApiError
+    ? plainOfficeError(friendlyFormError(failure.message, fields))
+    : friendlyFormError(failure.message, fields);
+}
+
 export type Option = {
   value: string;
   label: string;
@@ -157,11 +184,10 @@ export function ActionForm({
       await activeSubmit(declaredFormValues(values, activeFields));
       onClose();
     } catch (failure) {
-      const message = failure instanceof Error ? failure.message : '';
       setStale(!!onReloadLatest && failure instanceof ApiError && failure.status === 409);
       setError(
         failure instanceof Error
-          ? friendlyFormError(message, activeFields)
+          ? failureText(failure, activeFields)
           : 'Could not save. Please try again.',
       );
     } finally {
@@ -177,7 +203,7 @@ export function ActionForm({
     } catch (failure) {
       setError(
         failure instanceof Error
-          ? friendlyFormError(failure.message, activeFields)
+          ? failureText(failure, activeFields)
           : 'Could not save on this device.',
       );
     } finally {
@@ -202,7 +228,13 @@ export function ActionForm({
           : 'Review the refreshed choices before saving. Any unavailable selections were cleared.',
       );
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Could not reload the latest form.');
+      setError(
+        failure instanceof ApiError
+          ? plainOfficeError(failure.message)
+          : failure instanceof Error
+            ? failure.message
+            : 'Could not reload the latest form.',
+      );
     } finally {
       setBusy(false);
     }
