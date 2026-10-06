@@ -8,5 +8,8 @@ data/
 .DS_Store
 test-results/
 
+# Local design/reference harvest (large, mixed licences; kept off GitHub)
+_resources/
+
 # Personal Claude Code notes
 CLAUDE.local.md
