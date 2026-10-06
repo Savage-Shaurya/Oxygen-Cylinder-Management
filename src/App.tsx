@@ -42,12 +42,23 @@ import type {
 import { GASES, ROLES } from '../shared/types';
 import { request, login, bootstrap, logout, act, ApiError } from './api';
 import { ActionForm, plainOfficeError, type FormField, type Option } from './components/ActionForm';
-import { Badge, Button, Card, Empty, Modal, PageHeader, Search, Stat } from './components/UI';
+import {
+  Badge,
+  Button,
+  Card,
+  Empty,
+  MenuButton,
+  Modal,
+  PageHeader,
+  Search,
+  Stat,
+} from './components/UI';
 import OfflinePanel from './OfflinePanel';
 import ScannerInput from './ScannerInput';
 import CylinderLabel from './CylinderLabel';
 import PrintChallan from './PrintChallan';
 import DemoWalkthrough from './DemoWalkthrough';
+import LoginScreen from './LoginScreen';
 import { queueDelivery, listQueuedDeliveries } from './offline';
 import { allowedPartyTypes } from './party-options';
 import { availableCredit, creditNoteAvailable, depositBalance } from '../shared/finance';
@@ -437,7 +448,7 @@ export default function App() {
         </div>
       </div>
     );
-  if (!session) return <Login mode={serverMode} onSubmit={submitLogin} error={loginError} />;
+  if (!session) return <LoginScreen mode={serverMode} onSubmit={submitLogin} error={loginError} />;
   const switchMode = (next: AppMode) => {
     storeMode(session.user.id, next);
     setModeChoice((current) => ({ ...current, [session.user.id]: next }));
@@ -2368,6 +2379,7 @@ export default function App() {
         exportCsv={() => safeExport('/api/cylinders.csv')}
         canExport={allowed('admin', 'auditor')}
         canCsv={u.role !== 'driver'}
+        canAudit={allowed('admin', 'auditor')}
       />
     ),
     settings: (
@@ -2554,141 +2566,6 @@ export default function App() {
           </button>
         </div>
       )}
-    </div>
-  );
-}
-
-function Login({
-  mode,
-  onSubmit,
-  error,
-}: {
-  mode: 'demo' | 'live';
-  onSubmit: (email: string, password: string) => Promise<void>;
-  error: string;
-}) {
-  const [email, setEmail] = useState(mode === 'demo' ? 'operations@batra.demo' : ''),
-    [password, setPassword] = useState(mode === 'demo' ? 'OxygenDemo!2026' : ''),
-    [busy, setBusy] = useState(false),
-    // Demo mode lists the built-in accounts; members added in Settings sign in by email.
-    [otherAccount, setOtherAccount] = useState(false);
-  useEffect(() => {
-    if (mode === 'demo') {
-      setEmail('operations@batra.demo');
-      setPassword('OxygenDemo!2026');
-      setOtherAccount(false);
-    }
-  }, [mode]);
-  const typedEmail = mode !== 'demo' || otherAccount;
-  return (
-    <div className="login-screen">
-      <div className="login-panel">
-        <div className="login-brand">
-          <div className="brand-symbol">C</div>
-          <span>Cylvero</span>
-        </div>
-        <div className="login-copy">
-          <div className="eyebrow">Operations workspace</div>
-          <h1>
-            Every cylinder.
-            <br />
-            Accounted for.
-          </h1>
-          <p>
-            One place to manage stock, dispatch, quality and billing with a clear record of each
-            movement.
-          </p>
-        </div>
-        <div className="login-footer">
-          {mode === 'demo'
-            ? 'Local demonstration · Synthetic data only'
-            : 'Cylvero · Cylinder operations'}
-        </div>
-      </div>
-      <div className="login-form-wrap">
-        <form
-          className="login-card"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            setBusy(true);
-            try {
-              await onSubmit(email, password);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <div className="eyebrow">Welcome back</div>
-          <h2>Sign in to your workspace</h2>
-          <p>
-            {mode === 'demo'
-              ? 'Choose a demo role to explore its permitted work.'
-              : 'Enter your assigned account credentials.'}
-          </p>
-          {mode === 'demo' && (
-            <label className="field">
-              <span className="field-label">Demo account</span>
-              <select
-                value={otherAccount ? 'other' : email}
-                onChange={(e) => {
-                  if (e.target.value === 'other') {
-                    setOtherAccount(true);
-                    setEmail('');
-                    setPassword('');
-                  } else {
-                    setOtherAccount(false);
-                    setEmail(e.target.value);
-                    setPassword('OxygenDemo!2026');
-                  }
-                }}
-              >
-                {ROLES.map((role) => (
-                  <option value={`${role}@batra.demo`} key={role}>
-                    {roleLabels[role]} · {role}@batra.demo
-                  </option>
-                ))}
-                <option value="other">Other account (type an email)</option>
-              </select>
-            </label>
-          )}
-          {typedEmail && (
-            <label className="field">
-              <span className="field-label">Email address</span>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="username"
-                required
-              />
-            </label>
-          )}
-          <label className="field">
-            <span className="field-label">Password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </label>
-          {error && (
-            <div className="form-error" role="alert">
-              {error}
-            </div>
-          )}
-          <Button type="submit" loading={busy} className="login-submit">
-            Sign in <ArrowRight size={17} />
-          </Button>
-          {mode === 'demo' && (
-            <div className="demo-hint">
-              <strong>Demo access</strong>
-              <span>Password: OxygenDemo!2026</span>
-              <span>Accounts are role scoped. No live business data is used.</span>
-            </div>
-          )}
-        </form>
-      </div>
     </div>
   );
 }
@@ -2899,7 +2776,9 @@ function Overview({
               <h2>Recent activity</h2>
             </div>
             <button className="text-link" onClick={() => navigate('reports')}>
-              Audit trail <ArrowRight size={15} />
+              {/* Only administrators and auditors receive audit records from the server. */}
+              {['admin', 'auditor'].includes(u.role) ? 'Audit trail' : 'Reports'}{' '}
+              <ArrowRight size={15} />
             </button>
           </div>
           <div className="activity-list">
@@ -3103,21 +2982,25 @@ function Cylinders({
         description="Trace every serialized unit from inspection through delivery and return."
         actions={
           <>
-            {canWrite && (
-              <Button variant="secondary" onClick={downloadCylinderImportTemplate}>
-                Download import template
-              </Button>
-            )}
-            {canWrite && (
-              <Button variant="secondary" onClick={importCsv}>
-                <UploadSimple size={16} /> Import CSV
-              </Button>
-            )}
-            {canExport && (
-              <Button variant="secondary" onClick={exportCsv}>
-                <DownloadSimple size={16} /> Export CSV
-              </Button>
-            )}
+            <MenuButton
+              items={[
+                canWrite && {
+                  label: 'Import CSV',
+                  icon: <UploadSimple size={16} aria-hidden="true" />,
+                  onSelect: importCsv,
+                },
+                canWrite && {
+                  label: 'Download import template',
+                  icon: <DownloadSimple size={16} aria-hidden="true" />,
+                  onSelect: downloadCylinderImportTemplate,
+                },
+                canExport && {
+                  label: 'Export CSV',
+                  icon: <DownloadSimple size={16} aria-hidden="true" />,
+                  onSelect: exportCsv,
+                },
+              ]}
+            />
             {canWrite && (
               <Button onClick={register}>
                 <Plus size={16} /> Register cylinder
@@ -3424,26 +3307,18 @@ function Orders({
         description="Pick exact cylinders, record partial acceptance and reconcile the vehicle."
         actions={
           <>
-            {canOperate && (
-              <Button variant="secondary" onClick={reverseCollection}>
-                Undo collection
-              </Button>
-            )}
-            {canOperate && (
-              <Button variant="secondary" onClick={receiveReturn}>
-                <ArrowClockwise size={16} /> Receive returns
-              </Button>
-            )}
-            {canDeliver && (
-              <Button variant="secondary" onClick={collectReturns}>
-                Collect empties
-              </Button>
-            )}
-            {canDeliver && (
-              <Button variant="secondary" onClick={reportDiscrepancy}>
-                Report unknown
-              </Button>
-            )}
+            <MenuButton
+              items={[
+                canOperate && {
+                  label: 'Receive returns',
+                  icon: <ArrowClockwise size={16} aria-hidden="true" />,
+                  onSelect: receiveReturn,
+                },
+                canDeliver && { label: 'Collect empties', onSelect: collectReturns },
+                canDeliver && { label: 'Report unknown', onSelect: reportDiscrepancy },
+                canOperate && { label: 'Undo collection', onSelect: reverseCollection },
+              ]}
+            />
             {canOperate && (
               <Button onClick={createOrder}>
                 <Plus size={16} /> New order
@@ -3851,40 +3726,27 @@ function Billing({
         description="Issue documents from accepted deliveries, charge custody and allocate receipts."
         actions={
           <>
+            <MenuButton
+              items={[
+                canFinance && {
+                  label: 'Rental invoice',
+                  icon: <Plus size={16} aria-hidden="true" />,
+                  onSelect: rental,
+                },
+                canFinance && { label: 'Record deposit', onSelect: () => deposit('deposit') },
+                canFinance && { label: 'Refund deposit', onSelect: () => deposit('refund') },
+                canFinance && { label: 'Apply credit', onSelect: allocateCredit },
+                canFinance && { label: 'Refund credit', onSelect: refundCredit },
+                canFinance &&
+                  s.receipts.some((r) => r.kind === 'credit_allocation' && !r.reversedAt) && {
+                    label: 'Undo credit allocation',
+                    onSelect: unallocateCredit,
+                  },
+              ]}
+            />
             {canFinance && (
-              <Button variant="secondary" onClick={allocateCredit}>
-                Apply credit
-              </Button>
-            )}
-            {canFinance && (
-              <Button variant="secondary" onClick={refundCredit}>
-                Refund credit
-              </Button>
-            )}
-            {canFinance &&
-              s.receipts.some((r) => r.kind === 'credit_allocation' && !r.reversedAt) && (
-                <Button variant="secondary" onClick={unallocateCredit}>
-                  Undo credit allocation
-                </Button>
-              )}
-            {canFinance && (
-              <Button variant="secondary" onClick={() => deposit('deposit')}>
-                Record deposit
-              </Button>
-            )}
-            {canFinance && (
-              <Button variant="secondary" onClick={() => deposit('refund')}>
-                Refund deposit
-              </Button>
-            )}
-            {canFinance && (
-              <Button variant="secondary" onClick={() => receipt()}>
-                Record payment
-              </Button>
-            )}
-            {canFinance && (
-              <Button onClick={rental}>
-                <Plus size={16} /> Rental invoice
+              <Button onClick={() => receipt()}>
+                <Plus size={16} /> Record payment
               </Button>
             )}
           </>
@@ -4236,12 +4098,16 @@ function Reports({
   exportCsv,
   canExport,
   canCsv,
+  canAudit,
 }: {
   s: AppState;
   exportJson: () => void;
   exportCsv: () => void;
   canExport: boolean;
   canCsv: boolean;
+  // The server only sends audit records to administrators and auditors, so other roles
+  // would see an always-empty tab (simplification plan 5.2).
+  canAudit: boolean;
 }) {
   const [tab, setTab] = useState<'stock' | 'movement' | 'audit'>('stock'),
     [query, setQuery] = useState('');
@@ -4290,47 +4156,51 @@ function Reports({
         <Stat label="Cylinders" value={s.cylinders.length} />
         <Stat label="Movements" value={s.movements.length} />
         <Stat label="Orders" value={s.orders.length} />
-        <Stat label="Audit events" value={s.audit.length} />
+        {canAudit && <Stat label="Audit events" value={s.audit.length} />}
       </div>
       <Card>
         <div className="report-tabs" role="tablist">
-          {[
-            { id: 'stock', name: 'Stock position' },
-            { id: 'movement', name: 'Movement ledger' },
-            { id: 'audit', name: 'Audit trail' },
-          ].map((t) => (
-            <button
-              role="tab"
-              id={`report-tab-${t.id}`}
-              aria-controls={`report-panel-${t.id}`}
-              tabIndex={tab === t.id ? 0 : -1}
-              onKeyDown={(event) => {
-                const ids = ['stock', 'movement', 'audit'] as const;
-                const index = ids.indexOf(tab);
-                const next =
-                  event.key === 'ArrowRight'
-                    ? (index + 1) % 3
-                    : event.key === 'ArrowLeft'
-                      ? (index + 2) % 3
-                      : event.key === 'Home'
-                        ? 0
-                        : event.key === 'End'
-                          ? 2
-                          : -1;
-                if (next >= 0) {
-                  event.preventDefault();
-                  switchTab(ids[next]);
-                  document.getElementById(`report-tab-${ids[next]}`)?.focus();
-                }
-              }}
-              aria-selected={tab === t.id}
-              key={t.id}
-              className={tab === t.id ? 'active' : ''}
-              onClick={() => switchTab(t.id as typeof tab)}
-            >
-              {t.name}
-            </button>
-          ))}
+          {(
+            [
+              { id: 'stock', name: 'Stock position' },
+              { id: 'movement', name: 'Movement ledger' },
+              { id: 'audit', name: 'Audit trail' },
+            ] as const
+          )
+            .filter((t) => t.id !== 'audit' || canAudit)
+            .map((t, _index, shown) => (
+              <button
+                role="tab"
+                id={`report-tab-${t.id}`}
+                aria-controls={`report-panel-${t.id}`}
+                tabIndex={tab === t.id ? 0 : -1}
+                onKeyDown={(event) => {
+                  const ids = shown.map((x) => x.id);
+                  const index = ids.indexOf(tab);
+                  const next =
+                    event.key === 'ArrowRight'
+                      ? (index + 1) % ids.length
+                      : event.key === 'ArrowLeft'
+                        ? (index + ids.length - 1) % ids.length
+                        : event.key === 'Home'
+                          ? 0
+                          : event.key === 'End'
+                            ? ids.length - 1
+                            : -1;
+                  if (next >= 0) {
+                    event.preventDefault();
+                    switchTab(ids[next]);
+                    document.getElementById(`report-tab-${ids[next]}`)?.focus();
+                  }
+                }}
+                aria-selected={tab === t.id}
+                key={t.id}
+                className={tab === t.id ? 'active' : ''}
+                onClick={() => switchTab(t.id)}
+              >
+                {t.name}
+              </button>
+            ))}
         </div>
         <div role="tabpanel" id={`report-panel-${tab}`} aria-labelledby={`report-tab-${tab}`}>
           {tab === 'stock' && (
@@ -4413,7 +4283,7 @@ function Reports({
               )}
             </>
           )}
-          {tab === 'audit' && (
+          {tab === 'audit' && canAudit && (
             <>
               {!canExport && (
                 <p className="muted pad">
@@ -4488,16 +4358,49 @@ function Settings({
   return (
     <>
       <PageHeader
-        eyebrow="Workspace administration"
+        eyebrow={canAdmin ? 'Workspace administration' : 'Your account'}
         title="Settings"
-        description="Company identity, account access and demo environment."
+        description={
+          canAdmin
+            ? 'Company identity, account access and demo environment.'
+            : 'Change your password and see your company details.'
+        }
         actions={
-          <Button variant="secondary" onClick={changePassword}>
-            Change my password
-          </Button>
+          canAdmin && (
+            <Button variant="secondary" onClick={changePassword}>
+              Change my password
+            </Button>
+          )
         }
       />
       <div className="settings-grid">
+        {/* People who cannot edit settings come here mainly to change their password,
+            so it leads the page for them (simplification plan 5.2). */}
+        {!canAdmin && (
+          <Card className="settings-card">
+            <div className="section-heading">
+              <div>
+                <div className="eyebrow">Signed in as</div>
+                <h2>{currentUser.name}</h2>
+              </div>
+              <Button onClick={changePassword}>Change my password</Button>
+            </div>
+            <dl className="detail-grid">
+              <div>
+                <dt>Role</dt>
+                <dd>{roleLabels[currentUser.role]}</dd>
+              </div>
+              <div>
+                <dt>Email</dt>
+                <dd>{currentUser.email}</dd>
+              </div>
+              <div>
+                <dt>Branches</dt>
+                <dd>{currentUser.branchIds.map((id) => branch(s, id)).join(', ')}</dd>
+              </div>
+            </dl>
+          </Card>
+        )}
         <Card className="settings-card">
           <div className="section-heading">
             <div>
@@ -4543,74 +4446,84 @@ function Settings({
             </div>
           </dl>
         </Card>
-        <Card className="settings-card">
+        {(canAdmin || financialRead) && (
+          <Card className="settings-card">
+            <div className="section-heading">
+              <div>
+                <div className="eyebrow">External services</div>
+                <h2>Integration status</h2>
+              </div>
+            </div>
+            <p className="muted">
+              Accounting, GST submission, messaging and payment gateway connections are
+              unconfigured. Financial receipts here record manually confirmed payments; no external
+              settlement is implied.
+            </p>
+            <div className="integration-list">
+              {['Accounting sync', 'GST submission', 'WhatsApp messages', 'Payment gateway'].map(
+                (x) => (
+                  <div key={x}>
+                    <span>{x}</span>
+                    <Badge tone="neutral">Unconfigured</Badge>
+                  </div>
+                ),
+              )}
+            </div>
+          </Card>
+        )}
+      </div>
+      {(canAdmin || users.length > 0) && (
+        <Card className="users-card">
           <div className="section-heading">
             <div>
-              <div className="eyebrow">External services</div>
-              <h2>Integration status</h2>
+              <div className="eyebrow">Access control</div>
+              <h2>Team members</h2>
             </div>
-          </div>
-          <p className="muted">
-            Accounting, GST submission, messaging and payment gateway connections are unconfigured.
-            Financial receipts here record manually confirmed payments; no external settlement is
-            implied.
-          </p>
-          <div className="integration-list">
-            {['Accounting sync', 'GST submission', 'WhatsApp messages', 'Payment gateway'].map(
-              (x) => (
-                <div key={x}>
-                  <span>{x}</span>
-                  <Badge tone="neutral">Unconfigured</Badge>
-                </div>
-              ),
+            {canAdmin && (
+              <Button onClick={addUser}>
+                <Plus size={16} /> Add member
+              </Button>
             )}
           </div>
-        </Card>
-      </div>
-      <Card className="users-card">
-        <div className="section-heading">
-          <div>
-            <div className="eyebrow">Access control</div>
-            <h2>Team members</h2>
-          </div>
-          {canAdmin && (
-            <Button onClick={addUser}>
-              <Plus size={16} /> Add member
-            </Button>
+          {!users.length && (
+            <p className="muted pad">No team members are visible within your access.</p>
           )}
-        </div>
-        {!users.length && (
-          <p className="muted pad">No team members are visible within your access.</p>
-        )}
-        <Table headers={['Name', 'Email', 'Role', 'Branches', 'Status', 'Actions']}>
-          {users.map((user) => (
-            <tr key={user.id}>
-              <td>
-                <strong>{user.name}</strong>
-                {user.id === currentUser.id && <small className="cell-sub">You</small>}
-              </td>
-              <td>{user.email}</td>
-              <td>{roleLabels[user.role]}</td>
-              <td>{user.branchIds.map((id) => branch(s, id)).join(', ')}</td>
-              <td>
-                <Badge tone={user.active ? 'good' : 'bad'}>
-                  {user.active ? 'Active' : 'Disabled'}
-                </Badge>
-              </td>
-              <td>
+          <Table
+            headers={
+              canAdmin
+                ? ['Name', 'Email', 'Role', 'Branches', 'Status', 'Actions']
+                : ['Name', 'Email', 'Role', 'Branches', 'Status']
+            }
+          >
+            {users.map((user) => (
+              <tr key={user.id}>
+                <td>
+                  <strong>{user.name}</strong>
+                  {user.id === currentUser.id && <small className="cell-sub">You</small>}
+                </td>
+                <td>{user.email}</td>
+                <td>{roleLabels[user.role]}</td>
+                <td>{user.branchIds.map((id) => branch(s, id)).join(', ')}</td>
+                <td>
+                  <Badge tone={user.active ? 'good' : 'bad'}>
+                    {user.active ? 'Active' : 'Disabled'}
+                  </Badge>
+                </td>
                 {canAdmin && (
-                  <div className="row-actions">
-                    <button onClick={() => editUser(user)}>Edit access</button>
-                    {user.id !== currentUser.id && (
-                      <button onClick={() => resetPassword(user)}>Reset password</button>
-                    )}
-                  </div>
+                  <td>
+                    <div className="row-actions">
+                      <button onClick={() => editUser(user)}>Edit access</button>
+                      {user.id !== currentUser.id && (
+                        <button onClick={() => resetPassword(user)}>Reset password</button>
+                      )}
+                    </div>
+                  </td>
                 )}
-              </td>
-            </tr>
-          ))}
-        </Table>
-      </Card>
+              </tr>
+            ))}
+          </Table>
+        </Card>
+      )}
     </>
   );
 }

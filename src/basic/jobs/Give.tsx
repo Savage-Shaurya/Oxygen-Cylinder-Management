@@ -12,9 +12,9 @@ import { t } from '../../i18n';
 import Commit, { type Outcome } from '../Commit';
 import { Dots, EmptyState, PersonCard, Screen, Sheet } from '../components';
 import { driverOrders, findByCode, partyOf, pendingIds } from '../model';
-import { PartyIcon } from '../pictures';
+import { CylinderPic, PartyIcon } from '../pictures';
 import { readList, rememberInList } from '../storage';
-import { CylinderRow, ScanStep, useFlash, useScanList, type JobProps } from './shared';
+import { CylinderRow, ScanStep, useFlash, useScanList, WhoCard, type JobProps } from './shared';
 
 type Step = 'who' | 'scan' | 'name' | 'commit';
 
@@ -33,7 +33,9 @@ export default function Give({ state, user, run, home, params }: JobProps) {
   const party = order ? partyOf(state, order.partyId) : undefined;
   const remaining = order ? pendingIds(order) : [];
   // After a refresh, keep only cylinders that can still be given.
-  const scanned = scans.ids.filter((id) => remaining.includes(id));
+  // After saving, these cylinders leave the truck, so the result keeps what was sent.
+  const [sent, setSent] = useState<string[]>([]);
+  const scanned = step === 'commit' ? sent : scans.ids.filter((id) => remaining.includes(id));
   const customer = party?.name ?? '';
   const sentence = t('give.summary', { n: scanned.length, customer });
 
@@ -83,9 +85,10 @@ export default function Give({ state, user, run, home, params }: JobProps) {
   if (step === 'scan')
     return (
       <ScanStep
-        title={customer}
+        title={t('give.title')}
         tone="green"
-        icon={<PartyIcon type={party?.type} />}
+        icon={<CylinderPic look="full" size={34} />}
+        who={<WhoCard name={customer} party={party} />}
         say={t('give.scan.say')}
         onBack={() => (single && !params?.orderId ? home() : setStep('who'))}
         count={scanned.length}
@@ -122,6 +125,7 @@ export default function Give({ state, user, run, home, params }: JobProps) {
               name={name}
               onClick={() => {
                 setRecipient(name);
+                setSent(scanned);
                 setStep('commit');
               }}
             />
@@ -152,6 +156,7 @@ export default function Give({ state, user, run, home, params }: JobProps) {
                 setRecipient(typed.trim());
                 setTyped('');
                 setTyping(null);
+                setSent(scanned);
                 setStep('commit');
               }}
             >

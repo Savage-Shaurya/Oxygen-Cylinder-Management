@@ -12,6 +12,7 @@
     "demo:new": "tsx scripts/demo.ts",
     "demo:test": "tsx scripts/testing-demo.ts",
     "bundle:api": "tsx scripts/bundle-api.ts",
+    "voice:clips": "tsx scripts/voice-clips.ts",
     "test:pg": "tsx --test tests/api.test.ts tests/pg-security.test.ts"
   },
   "engines": {

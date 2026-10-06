@@ -132,6 +132,11 @@ function set(label: string, value: string) {
 function openButton(label: string) {
   fireEvent.click(screen.getByRole('button', { name: label }));
 }
+// Less-used header actions live in the page's "More" menu (simplification plan 5.3).
+function openMenuItem(label: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'More' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: label }));
+}
 function submit() {
   const form = screen.getByRole('dialog').querySelector('form');
   assert.ok(form);
@@ -252,7 +257,7 @@ test('registration, new order, and cylinder import submit real domain-valid comm
     assert.equal(h.actions[1].payload.unitPricePaise, 149975);
     assert.equal(orderSearch.value, '');
     openButton('Cylinders');
-    openButton('Import CSV');
+    openMenuItem('Import CSV');
     set(
       'Or paste CSV data',
       'serial,tag,manufacturer,gas,size,ownerId,branchId,testDue,lastTest,certificate\nRENDER-SERIAL-2,RENDER-TAG-2,"Works, Ltd",Medical oxygen,B,company,b-delhi,2031-01-01,2026-01-01,CERT-2',
@@ -326,7 +331,7 @@ test('invoice, payment, deposit, and refund forms convert percentages and rupees
     await actionCount(h.actions, 2);
     assert.equal(h.actions[1].type, 'finance.receipt');
     assert.equal(h.actions[1].payload.amountPaise, 1234);
-    openButton('Record deposit');
+    openMenuItem('Record deposit');
     set('Customer *', 'p-hospital-1');
     set('Amount *', '100.25');
     set('Method *', 'bank');
@@ -335,7 +340,7 @@ test('invoice, payment, deposit, and refund forms convert percentages and rupees
     await actionCount(h.actions, 3);
     assert.equal(h.actions[2].type, 'finance.deposit');
     assert.equal(h.actions[2].payload.amountPaise, 10025);
-    openButton('Refund deposit');
+    openMenuItem('Refund deposit');
     set('Liability exception approval', 'Approved synthetic liability test');
     set('Customer *', 'p-hospital-1');
     set('Amount *', '10.25');
@@ -397,7 +402,7 @@ test('partial and paid credits expose only spendable customer credit for refund'
     assert.equal(h.actions[0].type, 'finance.credit');
     assert.equal(h.actions[0].payload.amountPaise, 10000);
     assert.equal(h.state().invoices.find((invoice) => invoice.id === 'inv-seed-1')?.creditedPaise, 10000);
-    openButton('Refund credit');
+    openMenuItem('Refund credit');
     assert.equal(screen.queryByRole('option', { name: /Demo North Care Hospital/ }), null);
     openButton('Cancel');
 
@@ -409,7 +414,7 @@ test('partial and paid credits expose only spendable customer credit for refund'
     await actionCount(h.actions, 2);
     const note = h.state().invoices.find((invoice) => invoice.type === 'credit' && invoice.sourceId === 'inv-seed-3');
     assert.ok(note);
-    openButton('Refund credit');
+    openMenuItem('Refund credit');
     set('Customer *', 'p-hospital-2');
     set('Credit note to refund *', note.id);
     set('Refund amount *', '10.00');
@@ -453,7 +458,7 @@ test('an applied customer credit can be undone through the billing form', async 
     await actionCount(h.actions, 1);
     const note = h.state().invoices.find((invoice) => invoice.type === 'credit' && invoice.sourceId === original.id)!;
     assert.ok(note);
-    openButton('Apply credit');
+    openMenuItem('Apply credit');
     set('Credit note *', note.id);
     set('Invoice to settle *', 'inv-rendered-target');
     set('Amount to apply *', '10.00');
@@ -464,7 +469,7 @@ test('an applied customer credit can be undone through the billing form', async 
     assert.equal(h.state().invoices.find((invoice) => invoice.id === 'inv-rendered-target')?.appliedCreditPaise, 1000);
     const allocation = h.state().receipts.find((receipt) => receipt.kind === 'credit_allocation')!;
     assert.ok(allocation);
-    openButton('Undo credit allocation');
+    openMenuItem('Undo credit allocation');
     set('Credit allocation *', allocation.id);
     set('Reversal reason *', 'Applied to the wrong invoice');
     submit();
@@ -550,5 +555,43 @@ test('settings and team forms submit correctly shaped commands and account reque
     });
   } finally {
     h.dispose();
+  }
+});
+
+test('only roles that receive audit records see the Audit trail tab', async () => {
+  const admin = setup();
+  try {
+    render(React.createElement(App));
+    await screen.findByRole('button', { name: 'Customers' });
+    openButton('Reports & audit');
+    assert.ok(screen.getByRole('tab', { name: 'Audit trail' }));
+  } finally {
+    admin.dispose();
+  }
+
+  const operations = setup('operations');
+  try {
+    render(React.createElement(App));
+    // Operations opens in Basic mode unless an earlier test already chose Office mode for
+    // this test user, which is remembered on the device.
+    await waitFor(() =>
+      assert.ok(
+        screen.queryByRole('button', { name: 'Office mode' }) ||
+          screen.queryByRole('button', { name: 'Customers' }),
+      ),
+    );
+    const toOffice = screen.queryByRole('button', { name: 'Office mode' });
+    if (toOffice) fireEvent.click(toOffice);
+    await screen.findByRole('button', { name: 'Customers' });
+    openButton('Reports & audit');
+    assert.ok(screen.getByRole('tab', { name: 'Stock position' }));
+    assert.ok(screen.getByRole('tab', { name: 'Movement ledger' }));
+    assert.equal(screen.queryByRole('tab', { name: 'Audit trail' }), null);
+    openButton('Settings');
+    assert.ok(screen.getByRole('button', { name: 'Change my password' }));
+    assert.equal(screen.queryByRole('button', { name: 'Edit profile' }), null);
+    assert.equal(screen.queryByRole('button', { name: 'Add member' }), null);
+  } finally {
+    operations.dispose();
   }
 });

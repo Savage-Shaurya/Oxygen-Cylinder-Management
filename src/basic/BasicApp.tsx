@@ -19,7 +19,16 @@ import {
 import type { ActionResult, Bootstrap, Role } from '../../shared/types';
 import { LANGS, setLang, t, useLang, type TextKey } from '../i18n';
 import { Badge, BigButton, Dots, Sheet, type Tone } from './components';
-import { setVoiceOn, speak, success, failure, tap, useVoiceOn } from './feedback';
+import {
+  failure,
+  loadVoiceClips,
+  setVoiceOn,
+  speak,
+  speakEach,
+  success,
+  tap,
+  useVoiceOn,
+} from './feedback';
 import { driverOrders, pendingIds } from './model';
 import { pointAt, preloadMotion, press, tilesIn } from './motion';
 import { CylinderPic } from './pictures';
@@ -95,6 +104,7 @@ export default function BasicApp({
 
   useEffect(() => {
     preloadMotion();
+    loadVoiceClips();
   }, []);
   useEffect(() => {
     document.documentElement.lang = language ?? 'en';
@@ -287,7 +297,10 @@ export default function BasicApp({
 function LanguagePicker() {
   useEffect(() => {
     // Both languages, because we do not know yet which one the person understands.
-    speak(`${t('lang.say', {}, 'hi')} ${t('lang.say', {}, 'en')}`);
+    speakEach([
+      [t('lang.say', {}, 'hi'), 'hi'],
+      [t('lang.say', {}, 'en'), 'en'],
+    ]);
   }, []);
   return (
     <main className="b-main">
@@ -304,7 +317,7 @@ function LanguagePicker() {
             onClick={() => {
               tap();
               setLang(item.id);
-              speak(t('home.say', {}, item.id), true);
+              speak(t('home.say', {}, item.id), true, item.id);
             }}
           >
             <span>{item.name}</span>
@@ -470,7 +483,7 @@ function Home({
           <Tile key={tile.job} spec={tile} onOpen={() => open(tile.job)}>
             {index === 0 && showHand && (
               <span className="b-hand" ref={hand} aria-hidden="true">
-                <HandPointing size={64} weight="fill" />
+                <HandPointing size={52} weight="fill" />
               </span>
             )}
           </Tile>
@@ -500,6 +513,7 @@ function Tile({
     <button
       ref={ref}
       className={`b-tile tone-${spec.tone}`}
+      aria-label={t(spec.label)}
       onClick={() => {
         tap();
         press(ref.current);

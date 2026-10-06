@@ -1,0 +1,2 @@
+# The committed Vercel bundle must match esbuild output byte for byte, which is LF.
+api/index.mjs text eol=lf

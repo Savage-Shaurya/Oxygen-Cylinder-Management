@@ -61,6 +61,20 @@ export function t(key: TextKey, params: Params = {}, language: Lang = lang()): s
     );
 }
 
+const phraseMaps: Partial<Record<Lang, Map<string, TextKey>>> = {};
+
+/** The key whose fixed text is exactly this sentence, used to find a recorded voice clip. */
+export function phraseKey(text: string, language: Lang = lang()): TextKey | undefined {
+  let map = phraseMaps[language];
+  if (!map) {
+    map = new Map();
+    for (const [key, value] of Object.entries(tables[language]))
+      if (!map.has(value.trim())) map.set(value.trim(), key as TextKey);
+    phraseMaps[language] = map;
+  }
+  return map.get(text.trim());
+}
+
 export function speechLang(language: Lang = lang()) {
   return LANGS.find((item) => item.id === language)!.speech;
 }

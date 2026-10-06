@@ -2,9 +2,10 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { CheckFat } from '@phosphor-icons/react';
 import type { ActionResult, AppState, User } from '../../../shared/types';
 import { t } from '../../i18n';
-import { BigButton, Dots, Flash, Screen, type Tone } from '../components';
+import { Badge, BigButton, Dots, Flash, Screen, type Tone } from '../components';
 import { scanBeep, scanReject, speak } from '../feedback';
-import { CylinderPic, type CylinderLook } from '../pictures';
+import { CylinderPic, PartyIcon, type CylinderLook } from '../pictures';
+import type { Party } from '../../../shared/types';
 import Scanner, { type PickOption } from '../Scanner';
 
 export type JobId =
@@ -87,6 +88,7 @@ export function ScanStep({
   onDone,
   doneReady,
   doneLabel,
+  who,
 }: {
   title: string;
   tone: Tone;
@@ -102,6 +104,8 @@ export function ScanStep({
   onDone: () => void;
   doneReady?: boolean;
   doneLabel?: string;
+  /** Who this scan is for, shown as a card under the title. */
+  who?: ReactNode;
 }) {
   const ready = doneReady ?? count > 0;
   return (
@@ -124,6 +128,7 @@ export function ScanStep({
         ) : undefined
       }
     >
+      {who}
       <Scanner onCode={onCode} options={options} />
       <div className="b-tally" aria-live="polite">
         <span className="b-tally-number">
@@ -153,5 +158,18 @@ export function CylinderRow({ n, look = 'full' }: { n: number; look?: CylinderLo
       {n > shown && <span className="b-cyl-more">+{n - shown}</span>}
       <span className="b-cyl-count">×{n}</span>
     </span>
+  );
+}
+
+/** The customer a scan is for: letter badge, picture and full name. */
+export function WhoCard({ name, party }: { name: string; party?: Party }) {
+  return (
+    <div className="b-who">
+      <Badge name={name} size={44} />
+      <span className="b-who-icon">
+        <PartyIcon type={party?.type} size={26} />
+      </span>
+      <span>{name}</span>
+    </div>
   );
 }

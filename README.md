@@ -40,6 +40,8 @@ Drivers, and operations staff by default, open a **picture-based Simple mode** i
 - **Undo:** every save waits **5 seconds with a big UNDO** before anything is sent. Undo means nothing was recorded.
 - **Results:** a green tick or red cross, with a sound, a vibration and a spoken sentence. Errors are shown as four plain-language screens, and the technical text is under **Details**.
 - **Offline:** deliveries made with no network are saved on the phone. A ☁ button sends them later.
+- **Voice:** fixed sentences play natural Hindi and English recordings made with Sarvam AI (Bulbul v3), stored in `public/voice/`. They work offline and need no key in the app. Sentences that include names or numbers use the phone's own voice. To re-record after changing wording, put a Sarvam key in `keys.txt` (git-ignored) or `SARVAM_API_KEY`, then run `npm run voice:clips`. Only changed phrases are recorded again. `VOICE_SPEAKER` picks the voice; the default is `priya`.
+- **Sign-in:** in demo mode, tap a picture (Driver, Godown, Quality, Office). In a live workspace, the phone remembers the last email, so workers type only their password, and they can show the password while typing it.
 - **Server rules are unchanged:** every save goes through the same command path as Office mode, so permissions, CSRF, retry keys and the audit log behave exactly as before.
 
 The design and the reasons for each choice are in [docs/simplification-plan.md](docs/simplification-plan.md).

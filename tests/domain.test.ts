@@ -1033,7 +1033,10 @@ test('test evidence changes require complete coherent dates and certificate', ()
 });
 
 test('unload preserves order quantity and manifest; delivery proofs accumulate', () => {
-  let state = createSeedState();
+  // Seed at the same clock act() uses: a wall-clock seed puts the seeded dispatch after the
+  // fixed action time once the real date passes 2026-09-28, so delivery would predate it.
+  const seededAt = '2026-09-28T12:00:00.000Z';
+  let state = createSeedState(seededAt);
   state = act(
     state,
     'order.unload',
@@ -1053,7 +1056,7 @@ test('unload preserves order quantity and manifest; delivery proofs accumulate',
       'operations',
     ),
   );
-  let fresh = createSeedState();
+  let fresh = createSeedState(seededAt);
   fresh = act(
     fresh,
     'order.deliver',

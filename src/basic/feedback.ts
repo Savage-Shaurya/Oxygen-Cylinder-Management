@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { speechLang } from '../i18n';
+import { lang, phraseKey, speechLang, type Lang } from '../i18n';
 import { readSetting, writeSetting } from './storage';
 
 // Voice, tones and vibration. Every browser API here is optional: old phones and the
@@ -35,8 +35,89 @@ function synth(): SpeechSynthesis | undefined {
     : undefined;
 }
 
-export function stopSpeaking() {
+// Recorded clips (scripts/voice-clips.ts, Sarvam AI) sound far better than most phone voices
+// and work offline. They exist only for fixed sentences; anything else uses the phone voice.
+type ClipManifest = Partial<Record<Lang, Record<string, string>>>;
+let clips: ClipManifest | null = null;
+let clipsLoading = false;
+
+export function loadVoiceClips() {
+  if (clips || clipsLoading || typeof fetch !== 'function') return;
+  clipsLoading = true;
+  fetch('/voice/manifest.json')
+    .then((response) => (response.ok ? response.json() : null))
+    .then((manifest) => {
+      if (manifest && typeof manifest === 'object') clips = manifest as ClipManifest;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      clipsLoading = false;
+    });
+}
+
+/** Clip files that together say this sentence, or null if any part was not recorded. */
+function clipFiles(sentence: string, language: Lang): string[] | null {
+  const table = clips?.[language];
+  if (!table) return null;
+  const pieces = sentence.trim().split(/(?<=[.?!।])\s+/);
+  const files: string[] = [];
+  for (let start = 0; start < pieces.length;) {
+    let end = pieces.length;
+    for (; end > start; end--) {
+      const key = phraseKey(pieces.slice(start, end).join(' '), language);
+      if (key && table[key]) {
+        files.push(table[key]);
+        break;
+      }
+    }
+    if (end === start) return null;
+    start = end;
+  }
+  return files;
+}
+
+let player: HTMLAudioElement | undefined;
+let queue = 0;
+
+function playFiles(files: string[], fallback: () => void) {
+  const token = ++queue;
+  let index = 0;
+  const next = () => {
+    if (token !== queue || index >= files.length || typeof Audio === 'undefined') return;
+    const clip = new Audio(`/voice/${files[index++]}`);
+    player = clip;
+    clip.onended = next;
+    clip.play().catch(() => {
+      // A missing or blocked clip falls back to the phone voice for the whole sentence.
+      if (token === queue && index === 1) fallback();
+    });
+  };
+  next();
+}
+
+function phoneVoice(sentence: string, language: Lang, keepQueue = false) {
+  const speech = synth();
+  if (!speech) return;
   try {
+    if (!keepQueue) speech.cancel();
+    const utterance = new SpeechSynthesisUtterance(sentence);
+    const code = speechLang(language);
+    utterance.lang = code;
+    utterance.rate = 0.92;
+    const voice =
+      speech.getVoices().find((v) => v.lang.replace('_', '-') === code) ??
+      speech.getVoices().find((v) => v.lang.toLowerCase().startsWith(language));
+    if (voice) utterance.voice = voice;
+    speech.speak(utterance);
+  } catch {
+    /* Speech is a helper; pictures and words still carry the message. */
+  }
+}
+
+export function stopSpeaking() {
+  queue++;
+  try {
+    player?.pause();
     synth()?.cancel();
   } catch {
     /* Nothing is speaking. */
@@ -44,24 +125,24 @@ export function stopSpeaking() {
 }
 
 /** Speaks a sentence in the chosen language. `force` speaks even when auto-voice is off. */
-export function speak(sentence: string, force = false) {
-  const speech = synth();
-  if (!speech || !sentence || (!force && !voiceOn())) return;
-  try {
-    speech.cancel();
-    const utterance = new SpeechSynthesisUtterance(sentence);
-    const language = speechLang();
-    utterance.lang = language;
-    utterance.rate = 0.92;
-    const prefix = language.slice(0, 2);
-    const voice =
-      speech.getVoices().find((v) => v.lang.replace('_', '-') === language) ??
-      speech.getVoices().find((v) => v.lang.toLowerCase().startsWith(prefix));
-    if (voice) utterance.voice = voice;
-    speech.speak(utterance);
-  } catch {
-    /* Speech is a helper; pictures and words still carry the message. */
-  }
+export function speak(sentence: string, force = false, language: Lang = lang()) {
+  if (!sentence || (!force && !voiceOn())) return;
+  stopSpeaking();
+  const files = clipFiles(sentence, language);
+  if (files) playFiles(files, () => phoneVoice(sentence, language));
+  else phoneVoice(sentence, language);
+}
+
+/** Speaks several sentences, each in its own language (used before a language is chosen). */
+export function speakEach(parts: [sentence: string, language: Lang][], force = false) {
+  if (!parts.length || (!force && !voiceOn())) return;
+  stopSpeaking();
+  const files = parts.map(([sentence, language]) => clipFiles(sentence, language));
+  if (files.every(Boolean))
+    playFiles(files.flat() as string[], () =>
+      parts.forEach(([sentence, language], i) => phoneVoice(sentence, language, i > 0)),
+    );
+  else parts.forEach(([sentence, language], i) => phoneVoice(sentence, language, i > 0));
 }
 
 let audio: AudioContext | undefined;

@@ -11,9 +11,8 @@ import {
   loadableOrders,
   partyOf,
 } from '../model';
-import { PartyIcon } from '../pictures';
 import { readSetting, writeSetting } from '../storage';
-import { CylinderRow, ScanStep, useFlash, useScanList, type JobProps } from './shared';
+import { CylinderRow, ScanStep, useFlash, useScanList, WhoCard, type JobProps } from './shared';
 import VehicleSheet from './VehicleSheet';
 
 type Step = 'which' | 'scan' | 'driver' | 'commit';
@@ -94,9 +93,10 @@ export default function LoadTruck({ state, user, users, run, home }: JobProps) {
   if (step === 'scan')
     return (
       <ScanStep
-        title={customer}
+        title={t('load.title')}
         tone="orange"
-        icon={<PartyIcon type={party?.type} />}
+        icon={<Truck size={30} weight="duotone" />}
+        who={<WhoCard name={customer} party={party} />}
         say={t('load.scan.say')}
         onBack={() => setStep('which')}
         count={scans.ids.length}

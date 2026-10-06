@@ -6,6 +6,11 @@ import { join } from 'node:path';
 import { Store } from '../server/store.js';
 import { runMaintenance } from '../scripts/maintenance.js';
 
+// POSIX permission bits do not exist on Windows: chmod only toggles the read-only flag and
+// stat always reports 666 for writable files. There we still check the dry run leaves the
+// reported mode unchanged, but skip the exact 644/600 assertions.
+const posixModes = process.platform !== 'win32';
+
 test('maintenance reviews legacy records without changing data or permissions by default', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ctms-maintenance-'));
   const dbPath = join(dir, 'synthetic.sqlite');
@@ -27,11 +32,18 @@ test('maintenance reviews legacy records without changing data or permissions by
     chmodSync(dbPath, 0o644);
     writeFileSync(backupPath, 'synthetic backup placeholder', { mode: 0o644 });
     const before = statSync(dbPath).mtimeMs;
+    const dbModeBefore = statSync(dbPath).mode & 0o777;
+    const backupModeBefore = statSync(backupPath).mode & 0o777;
     const dryRun = runMaintenance(['--db', dbPath, '--backup', backupPath]);
     assert.equal(dryRun.permissionChangesApplied, false);
-    assert.equal(dryRun.files[0].mode, '644');
-    assert.equal(statSync(dbPath).mode & 0o777, 0o644);
-    assert.equal(statSync(backupPath).mode & 0o777, 0o644);
+    assert.equal(dryRun.files[0].mode, dbModeBefore.toString(8).padStart(3, '0'));
+    assert.equal(statSync(dbPath).mode & 0o777, dbModeBefore);
+    assert.equal(statSync(backupPath).mode & 0o777, backupModeBefore);
+    if (posixModes) {
+      assert.equal(dryRun.files[0].mode, '644');
+      assert.equal(statSync(dbPath).mode & 0o777, 0o644);
+      assert.equal(statSync(backupPath).mode & 0o777, 0o644);
+    }
     assert.equal(statSync(dbPath).mtimeMs, before);
     const org = dryRun.organizations[0];
     assert.equal(org.missingOrganizationAdmin, true);
@@ -44,8 +56,10 @@ test('maintenance reviews legacy records without changing data or permissions by
     ]);
     const applied = runMaintenance(['--db', dbPath, '--backup', backupPath, '--apply-permissions']);
     assert.equal(applied.permissionChangesApplied, true);
-    assert.equal(statSync(dbPath).mode & 0o777, 0o600);
-    assert.equal(statSync(backupPath).mode & 0o777, 0o600);
+    if (posixModes) {
+      assert.equal(statSync(dbPath).mode & 0o777, 0o600);
+      assert.equal(statSync(backupPath).mode & 0o777, 0o600);
+    }
     assert.equal(statSync(dbPath).mtimeMs, before);
   } finally {
     rmSync(dir, { recursive: true, force: true });

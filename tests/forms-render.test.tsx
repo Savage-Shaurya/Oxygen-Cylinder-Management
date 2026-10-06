@@ -17,6 +17,56 @@ Object.defineProperty(globalThis, 'HTMLElement', {
 const React = await import('react');
 const { render, fireEvent, screen, waitFor, cleanup } = await import('@testing-library/react');
 const { ActionForm, recoverFormValues } = await import('../src/components/ActionForm');
+const { MenuButton } = await import('../src/components/UI');
+
+test('the More menu opens, closes on Escape and outside click, and runs the chosen action', () => {
+  const chosen: string[] = [];
+  try {
+    render(
+      React.createElement(MenuButton, {
+        items: [
+          { label: 'Import CSV', onSelect: () => chosen.push('import') },
+          false,
+          { label: 'Export CSV', onSelect: () => chosen.push('export') },
+        ],
+      }),
+    );
+    const trigger = screen.getByRole('button', { name: 'More' });
+    assert.equal(trigger.getAttribute('aria-haspopup'), 'menu');
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    assert.equal(screen.queryByRole('menu'), null);
+
+    fireEvent.click(trigger);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+    const items = screen.getAllByRole('menuitem');
+    assert.deepEqual(
+      items.map((item) => item.textContent),
+      ['Import CSV', 'Export CSV'],
+    );
+    assert.equal(document.activeElement, items[0]);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
+    assert.equal(document.activeElement, items[1]);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
+    assert.equal(document.activeElement, items[0]);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    assert.equal(screen.queryByRole('menu'), null);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    assert.equal(document.activeElement, trigger);
+    assert.deepEqual(chosen, []);
+
+    fireEvent.click(trigger);
+    fireEvent.mouseDown(document.body);
+    assert.equal(screen.queryByRole('menu'), null);
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Export CSV' }));
+    assert.deepEqual(chosen, ['export']);
+    assert.equal(screen.queryByRole('menu'), null);
+    assert.equal(document.activeElement, trigger);
+  } finally {
+    cleanup();
+  }
+});
 
 test('refresh retains notes but removes choices no longer available', () => {
   const fields: FormField[] = [

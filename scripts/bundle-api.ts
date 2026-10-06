@@ -7,6 +7,7 @@
 import { build, type BuildOptions } from 'esbuild';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const outfile = resolve('api/index.mjs');
 export const bundleOptions: BuildOptions = {
@@ -27,6 +28,11 @@ export const bundleOptions: BuildOptions = {
   },
 };
 
+/** Treats CRLF and LF as equal, so a Windows checkout of the bundle compares cleanly. */
+export function normalizeEol(text: string): string {
+  return text.replace(/\r\n/g, '\n');
+}
+
 export async function bundle(): Promise<string> {
   const result = await build(bundleOptions);
   const inputs = Object.keys(result.metafile!.inputs);
@@ -36,7 +42,8 @@ export async function bundle(): Promise<string> {
   return result.outputFiles![0].text;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Compare real paths so direct runs work on Windows too (file:///C:/… vs C:\…).
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const code = await bundle();
   if (process.argv.includes('--check')) {
     let current = '';
@@ -45,7 +52,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     } catch {
       // missing bundle counts as stale
     }
-    if (current !== code) {
+    // Ignore CR so a CRLF checkout (Windows, core.autocrlf) still counts as up to date.
+    if (normalizeEol(current) !== normalizeEol(code)) {
       console.error('api/index.mjs is out of date. Run: npm run bundle:api');
       process.exit(1);
     }

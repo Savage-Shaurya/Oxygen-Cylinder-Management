@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, existsSync, lstatSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 type Row = { org_id: string; state_json: string };
 type UserRow = {
@@ -130,7 +131,8 @@ export function runMaintenance(args: string[]) {
   return { ...report, permissionChangesApplied: applyPermissions };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Compare real paths so direct runs work on Windows too (file:///C:/… vs C:\…).
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   try {
     console.log(JSON.stringify(runMaintenance(process.argv.slice(2)), null, 2));
   } catch (error) {

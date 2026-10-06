@@ -1,5 +1,5 @@
-import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
-import { X, SpinnerGap, MagnifyingGlass, Plus } from '@phosphor-icons/react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { X, SpinnerGap, MagnifyingGlass, Plus, CaretDown } from '@phosphor-icons/react';
 
 export function Button({
   children,
@@ -235,6 +235,118 @@ export function Stat({
       <div className="stat-label">{label}</div>
       <div className="stat-value">{value}</div>
       {detail && <div className="stat-detail">{detail}</div>}
+    </div>
+  );
+}
+export type MenuItem = { label: string; onSelect: () => void; icon?: ReactNode };
+/**
+ * A "More" button that opens a short list of less-used actions (simplification plan 5.3).
+ * Follows the WAI-ARIA menu button pattern: Escape or a click outside closes it,
+ * arrow keys, Home and End move between items, and focus returns to the trigger.
+ */
+export function MenuButton({
+  label = 'More',
+  items,
+}: {
+  label?: string;
+  items: (MenuItem | false | null | undefined)[];
+}) {
+  const visible = items.filter((item): item is MenuItem => Boolean(item));
+  const [open, setOpen] = useState(false);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const focusOnOpen = useRef<'first' | 'last'>('first');
+  const menuId = useId();
+  const entries = () =>
+    Array.from(list.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+  useEffect(() => {
+    if (!open) return;
+    const all = entries();
+    (focusOnOpen.current === 'last' ? all[all.length - 1] : all[0])?.focus();
+    const outside = (event: MouseEvent | TouchEvent) => {
+      if (!wrapper.current?.contains(event.target as Node | null)) setOpen(false);
+    };
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('touchstart', outside);
+    return () => {
+      document.removeEventListener('mousedown', outside);
+      document.removeEventListener('touchstart', outside);
+    };
+  }, [open]);
+  if (!visible.length) return null;
+  function close() {
+    setOpen(false);
+    trigger.current?.focus();
+  }
+  function onTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusOnOpen.current = event.key === 'ArrowUp' ? 'last' : 'first';
+      setOpen(true);
+    }
+  }
+  function onMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const all = entries();
+    const index = all.indexOf(document.activeElement as HTMLElement);
+    const move = (next: number) => {
+      event.preventDefault();
+      all[(next + all.length) % all.length]?.focus();
+    };
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    } else if (event.key === 'ArrowDown') move(index + 1);
+    else if (event.key === 'ArrowUp') move(index - 1);
+    else if (event.key === 'Home') move(0);
+    else if (event.key === 'End') move(all.length - 1);
+    else if (event.key === 'Tab') setOpen(false);
+  }
+  return (
+    <div className="menu-button" ref={wrapper}>
+      <button
+        ref={trigger}
+        type="button"
+        className="button button-secondary menu-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={() => {
+          focusOnOpen.current = 'first';
+          setOpen((value) => !value);
+        }}
+        onKeyDown={onTriggerKeyDown}
+      >
+        {label} <CaretDown size={14} weight="bold" aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          ref={list}
+          id={menuId}
+          className="menu-list"
+          role="menu"
+          aria-label={label}
+          onKeyDown={onMenuKeyDown}
+        >
+          {visible.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              className="menu-item"
+              onClick={() => {
+                close();
+                item.onSelect();
+              }}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

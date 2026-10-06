@@ -16,3 +16,8 @@ CLAUDE.local.md
 
 # Temporary bundles from UI test runs
 tests/.app-test-*/
+
+# Local secrets: never commit
+keys.txt
+*.key
+.env.local

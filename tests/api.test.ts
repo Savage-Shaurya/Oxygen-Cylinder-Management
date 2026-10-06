@@ -1884,10 +1884,16 @@ test('new database and snapshots are private, and idle sessions expire', sqliteO
   const dbPath = join(dir, 'source.sqlite');
   const backupPath = join(dir, 'backup.sqlite');
   const restoredPath = join(dir, 'restored.sqlite');
+  // POSIX permission bits do not exist on Windows (stat reports 666 for any writable file),
+  // so the 0600 checks only run elsewhere. The session-expiry checks run everywhere.
+  const assertPrivate = (path: string) => {
+    if (process.platform !== 'win32') assert.equal(statSync(path).mode & 0o777, 0o600);
+  };
+  let store: Store | undefined;
   try {
     const { Store, restoreSnapshot } = await import('../server/store.js');
-    const store = new Store({ dbPath, demoMode: true });
-    assert.equal(statSync(dbPath).mode & 0o777, 0o600);
+    store = new Store({ dbPath, demoMode: true });
+    assertPrivate(dbPath);
     const user = store.getUser('u-admin')!;
     store.createSession(user, 'idle-token', 'csrf');
     store.db
@@ -1895,12 +1901,15 @@ test('new database and snapshots are private, and idle sessions expire', sqliteO
       .run(Date.now() - 31 * 60_000, (await import('../server/auth.js')).tokenHash('idle-token'));
     assert.equal(store.session('idle-token'), undefined);
     store.backup(backupPath);
-    assert.equal(statSync(backupPath).mode & 0o777, 0o600);
+    assertPrivate(backupPath);
     store.close();
+    store = undefined;
     restoreSnapshot(backupPath, restoredPath);
-    assert.equal(statSync(restoredPath).mode & 0o777, 0o600);
+    assertPrivate(restoredPath);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    // Close before removing: Windows cannot delete a directory holding an open SQLite file.
+    store?.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -2007,12 +2016,20 @@ test('backup command refuses an existing empty source without seeding it', () =>
   const destination = join(dir, 'backup.sqlite');
   try {
     writeFileSync(source, '');
-    const result = spawnSync('node_modules/.bin/tsx', ['scripts/backup.ts', destination], {
-      cwd: process.cwd(),
-      env: { ...process.env, CTMS_DB_PATH: source },
-      encoding: 'utf8',
-    });
+    // Run tsx's CLI through the current Node binary: node_modules/.bin/tsx is a shell script
+    // that Windows cannot spawn directly (it needs tsx.cmd and a shell).
+    const result = spawnSync(
+      process.execPath,
+      [join('node_modules', 'tsx', 'dist', 'cli.mjs'), 'scripts/backup.ts', destination],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, CTMS_DB_PATH: source },
+        encoding: 'utf8',
+      },
+    );
+    assert.equal(result.error, undefined);
     assert.equal(result.status, 2);
+    assert.match(result.stderr, /Source database is not initialized/);
     assert.equal(statSync(source).size, 0);
     assert.equal(existsSync(destination), false);
   } finally {

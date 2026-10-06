@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { bundle } from '../scripts/bundle-api.js';
+import { bundle, normalizeEol } from '../scripts/bundle-api.js';
 import { restoreApiPath } from '../server/vercel.js';
 
 test('committed Vercel function bundle matches the server source', async () => {
-  const committed = readFileSync('api/index.mjs', 'utf8');
+  // Line endings are ignored: a Windows checkout (core.autocrlf) has CRLF, esbuild emits LF.
+  const committed = normalizeEol(readFileSync('api/index.mjs', 'utf8'));
   assert.equal(
-    committed === (await bundle()),
+    committed === normalizeEol(await bundle()),
     true,
     'api/index.mjs is stale: run npm run bundle:api',
   );

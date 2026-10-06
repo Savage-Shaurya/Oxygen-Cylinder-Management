@@ -4,9 +4,9 @@ import { t } from '../../i18n';
 import Commit from '../Commit';
 import { EmptyState, PersonCard, Screen } from '../components';
 import { collectableCustomers, driverVehicle, findByCode } from '../model';
-import { PartyIcon } from '../pictures';
+import { CylinderPic, PartyIcon } from '../pictures';
 import { readSetting, writeSetting } from '../storage';
-import { CylinderRow, ScanStep, useFlash, useScanList, type JobProps } from './shared';
+import { CylinderRow, ScanStep, useFlash, useScanList, WhoCard, type JobProps } from './shared';
 import VehicleSheet from './VehicleSheet';
 
 type Step = 'who' | 'scan' | 'commit';
@@ -22,7 +22,9 @@ export default function TakeBack({ state, user, run, home, open }: JobProps) {
 
   const chosen = customers.find((item) => item.party.id === partyId);
   const heldIds = chosen?.held.map((c) => c.id) ?? [];
-  const scanned = scans.ids.filter((id) => heldIds.includes(id));
+  // After saving, these cylinders leave the customer, so the result keeps what was sent.
+  const [sent, setSent] = useState<string[]>([]);
+  const scanned = step === 'commit' ? sent : scans.ids.filter((id) => heldIds.includes(id));
   const customer = chosen?.party.name ?? '';
   const sentence = t('take.summary', { n: scanned.length, customer });
   const vehicle = driverVehicle(state, user, partyId) || readSetting(vehicleKey) || '';
@@ -61,9 +63,10 @@ export default function TakeBack({ state, user, run, home, open }: JobProps) {
     return (
       <>
         <ScanStep
-          title={customer}
+          title={t('take.title')}
           tone="blue"
-          icon={<PartyIcon type={chosen.party.type} />}
+          icon={<CylinderPic look="empty" size={34} />}
+          who={<WhoCard name={customer} party={chosen.party} />}
           say={t('take.scan.say')}
           onBack={() => (customers.length === 1 ? home() : setStep('who'))}
           count={scanned.length}
@@ -92,7 +95,11 @@ export default function TakeBack({ state, user, run, home, open }: JobProps) {
             scans.add(c.id);
             flash.good(<>✔ {c.tag}</>);
           }}
-          onDone={() => (vehicle ? setStep('commit') : setAskVehicle(true))}
+          onDone={() => {
+            setSent(scanned);
+            if (vehicle) setStep('commit');
+            else setAskVehicle(true);
+          }}
         />
         {askVehicle && (
           <VehicleSheet
