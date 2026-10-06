@@ -5,7 +5,7 @@ import { indexedDB } from 'fake-indexeddb';
 import { build } from 'esbuild';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSeedState } from '../server/seed';
 import type { ActionRequest, AppState, Bootstrap, Party } from '../shared/types';
 
@@ -29,7 +29,7 @@ Object.defineProperty(globalThis, 'indexedDB', { value: indexedDB, configurable:
 const React = await import('react');
 const { render, fireEvent, screen, waitFor, cleanup } = await import('@testing-library/react');
 const bundle = await build({
-  entryPoints: [new URL('../src/App.tsx', import.meta.url).pathname],
+  entryPoints: [fileURLToPath(new URL('../src/App.tsx', import.meta.url))],
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -37,7 +37,7 @@ const bundle = await build({
   loader: { '.css': 'empty' },
   write: false,
 });
-const bundleDir = mkdtempSync(join(new URL('.', import.meta.url).pathname, '.app-test-'));
+const bundleDir = mkdtempSync(join(fileURLToPath(new URL('.', import.meta.url)), '.app-test-'));
 const bundlePath = join(bundleDir, 'app.mjs');
 writeFileSync(bundlePath, bundle.outputFiles[0].contents);
 const { default: App } = await import(pathToFileURL(bundlePath).href);

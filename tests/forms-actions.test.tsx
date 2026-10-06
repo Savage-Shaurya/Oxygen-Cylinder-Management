@@ -5,7 +5,7 @@ import { indexedDB } from 'fake-indexeddb';
 import { build } from 'esbuild';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { applyAction, DomainError } from '../server/domain';
 import { createSeedState } from '../server/seed';
 import type { ActionRequest, AppState, Bootstrap, User } from '../shared/types';
@@ -31,7 +31,7 @@ const React = await import('react');
 const { render, fireEvent, screen, waitFor, cleanup, within } =
   await import('@testing-library/react');
 const bundle = await build({
-  entryPoints: [new URL('../src/App.tsx', import.meta.url).pathname],
+  entryPoints: [fileURLToPath(new URL('../src/App.tsx', import.meta.url))],
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -39,7 +39,7 @@ const bundle = await build({
   loader: { '.css': 'empty' },
   write: false,
 });
-const bundleDir = mkdtempSync(join(new URL('.', import.meta.url).pathname, '.app-test-'));
+const bundleDir = mkdtempSync(join(fileURLToPath(new URL('.', import.meta.url)), '.app-test-'));
 const bundlePath = join(bundleDir, 'app.mjs');
 writeFileSync(bundlePath, bundle.outputFiles[0].contents);
 const { default: App } = await import(pathToFileURL(bundlePath).href);
@@ -492,6 +492,8 @@ test('finance has no Return action and switching customer refreshes eligible ret
   const operations = setup('operations');
   try {
     render(React.createElement(App));
+    // Operations opens in the picture-based Basic mode; customer work lives in Office mode.
+    fireEvent.click(await screen.findByRole('button', { name: 'Office mode' }));
     await screen.findByRole('button', { name: 'Customers' });
     openButton('Customers');
     const customer = await screen.findByRole('button', { name: 'Demo North Care Hospital' });

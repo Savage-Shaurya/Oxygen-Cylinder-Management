@@ -52,6 +52,7 @@ import { allowedPartyTypes } from './party-options';
 import { availableCredit, creditNoteAvailable, depositBalance } from '../shared/finance';
 import { downloadCylinderImportTemplate, CYLINDER_IMPORT_COLUMNS } from './import-template';
 import { decimalHundredths, invoiceBalance, unbilledOrder, rentalPeriod } from './finance-view';
+import BasicApp, { canSwitchMode, modeFor, storeMode, storedMode, type AppMode } from './basic/BasicApp';
 
 type View =
   | 'overview'
@@ -279,6 +280,8 @@ export default function App() {
     id: string;
   } | null>(null);
   const [toast, setToast] = useState('');
+  // Basic (picture) or Office mode, chosen per user on this phone.
+  const [modeChoice, setModeChoice] = useState<Record<string, AppMode>>({});
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   useEffect(() => {
@@ -426,6 +429,31 @@ export default function App() {
       </div>
     );
   if (!session) return <Login mode={serverMode} onSubmit={submitLogin} error={loginError} />;
+  const switchMode = (next: AppMode) => {
+    storeMode(session.user.id, next);
+    setModeChoice((current) => ({ ...current, [session.user.id]: next }));
+    setToast('');
+    setForm(null);
+    setDetail(null);
+    setMenu(false);
+  };
+  if (
+    modeFor(session.user.role, modeChoice[session.user.id] ?? storedMode(session.user.id)) ===
+    'basic'
+  )
+    return (
+      <BasicApp
+        session={session}
+        run={run}
+        refresh={async () => {
+          const refreshed = await bootstrap();
+          latestSession.current = refreshed;
+          setSession(refreshed);
+        }}
+        signOut={signout}
+        toOffice={canSwitchMode(session.user.role) ? () => switchMode('office') : undefined}
+      />
+    );
   const s = session.state,
     u = session.user,
     users = session.users,
@@ -2441,9 +2469,11 @@ export default function App() {
             {s.settings.mode === 'demo' && (
               <DemoWalkthrough state={s} user={u} onNavigate={navigate} />
             )}
-            <span className="sync-pill">
-              <span className="sync-dot" /> Saved state · revision {s.revision}
-            </span>
+            {canSwitchMode(u.role) && (
+              <button className="btn button simple-mode" onClick={() => switchMode('basic')}>
+                Simple mode
+              </button>
+            )}
             <div className="top-avatar">{u.name[0]}</div>
           </div>
         </header>
