@@ -1922,3 +1922,263 @@ td strong {
     flex: 1 1 auto;
   }
 }
+
+/* ---------- Cylinder life story ---------- */
+.life-open {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% - 44px);
+  margin: 4px 22px 16px;
+  padding: 14px 16px;
+  border: 1px solid #cfe0d4;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f1f8f3, #e6f2ea);
+  color: #174a37;
+  text-align: left;
+  cursor: pointer;
+}
+.life-open:hover {
+  border-color: #126b57;
+}
+.life-open:focus-visible {
+  outline: 3px solid #ffb703;
+  outline-offset: 2px;
+}
+.life-open span {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.life-open strong {
+  font-size: 15px;
+}
+.life-open small {
+  font-size: 12px;
+  color: #5d7466;
+}
+.life {
+  padding: 20px 24px 24px;
+}
+.life-journey {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+  position: relative;
+}
+.life-journey::before {
+  content: '';
+  position: absolute;
+  top: 19px;
+  left: 7%;
+  right: 7%;
+  height: 3px;
+  background: #e2e8e3;
+}
+.life-journey li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9aa69f;
+  text-align: center;
+}
+.life-journey li.done {
+  color: #24443a;
+}
+.life-journey li small {
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: #c25e00;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.life-journey li:not(.done) .life-dot {
+  background: #f1f4f2;
+  color: #b4beb8;
+  box-shadow: none;
+}
+.life-journey li.now .life-dot {
+  box-shadow: 0 0 0 4px rgba(194, 94, 0, 0.25);
+}
+.life-dot {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--stage, #6b7686);
+}
+.stage-registered {
+  --stage: #4a5568;
+}
+.stage-checked {
+  --stage: #0f6e6e;
+}
+.stage-filled {
+  --stage: #1557b0;
+}
+.stage-released {
+  --stage: #0a7a3b;
+}
+.stage-truck {
+  --stage: #c25e00;
+}
+.stage-customer {
+  --stage: #5b3cc4;
+}
+.stage-back {
+  --stage: #2f7be0;
+}
+.stage-supplier {
+  --stage: #7a4a00;
+}
+.stage-problem {
+  --stage: #b3261e;
+}
+.stage-retired {
+  --stage: #3c4452;
+}
+.life-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.life-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid #e7ece7;
+  border-radius: 10px;
+  background: #fbfcfb;
+}
+.life-stats strong {
+  font-size: 24px;
+  line-height: 1.1;
+  color: #183b2f;
+}
+.life-stats strong.small {
+  font-size: 15px;
+}
+.life-stats strong.late {
+  color: #b3261e;
+}
+.life-stats span {
+  font-size: 11px;
+  color: #6d7d73;
+  font-weight: 600;
+}
+.life-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.life-toolbar h3 {
+  font-size: 15px;
+}
+.life-toolbar > div {
+  display: flex;
+  gap: 8px;
+}
+.life-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.life-steps li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 132px 40px 1fr;
+  gap: 12px;
+  padding-bottom: 18px;
+}
+.life-steps li::before {
+  content: '';
+  position: absolute;
+  left: calc(132px + 12px + 19px);
+  top: 40px;
+  bottom: 0;
+  width: 2px;
+  background: #e2e8e3;
+}
+.life-steps li:last-child::before {
+  display: none;
+}
+.life-steps time {
+  padding-top: 10px;
+  font-size: 12px;
+  color: #6d7d73;
+  text-align: right;
+}
+.life-steps strong {
+  display: block;
+  padding-top: 8px;
+  font-size: 15px;
+  color: #183b2f;
+}
+.life-steps p {
+  margin: 3px 0;
+  font-size: 13px;
+  color: #34463d;
+}
+.life-steps small {
+  display: block;
+  font-size: 12px;
+  color: #7a8a80;
+}
+.life-empty,
+.life-foot {
+  font-size: 12px;
+  color: #7a8a80;
+}
+.life-foot {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #eef2ee;
+}
+@media (max-width: 640px) {
+  .life {
+    padding: 16px;
+  }
+  .life-journey {
+    grid-template-columns: repeat(4, 1fr);
+    row-gap: 12px;
+  }
+  .life-journey::before {
+    display: none;
+  }
+  .life-steps li {
+    grid-template-columns: 40px 1fr;
+  }
+  .life-steps time {
+    grid-column: 2;
+    grid-row: 2;
+    text-align: left;
+    padding-top: 0;
+  }
+  .life-steps li::before {
+    left: 19px;
+  }
+}
+@media print {
+  .life-toolbar > div {
+    display: none;
+  }
+}

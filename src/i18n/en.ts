@@ -91,6 +91,7 @@ const en = {
   'look.title': 'Scan',
   'look.say': 'Scan a cylinder to see what it is.',
   'look.next': 'Scan next',
+  'look.story': 'Life story',
   'look.unknown': 'Not known. Give to office.',
   'status.ready': 'Full. Ready.',
   'status.wait': 'Full. Not checked yet.',

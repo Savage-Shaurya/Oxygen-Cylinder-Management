@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Info, QrCode, Scan } from '@phosphor-icons/react';
+import { ClockCounterClockwise, Info, QrCode, Scan } from '@phosphor-icons/react';
+import LifeStory from '../../LifeStory';
 import type { Cylinder } from '../../../shared/types';
 import { t } from '../../i18n';
 import { BigButton, Screen, Sheet } from '../components';
@@ -10,9 +11,12 @@ import Scanner from '../Scanner';
 import type { JobProps } from './shared';
 
 /** "What is this cylinder?" — one scan, one big answer. */
-export default function Look({ state, home }: JobProps) {
+export default function Look({ state, user, people, home }: JobProps) {
   const [found, setFound] = useState<Cylinder | null | undefined>(undefined);
   const [info, setInfo] = useState(false);
+  const [story, setStory] = useState(false);
+  // Office roles can open the whole history of a scanned cylinder; drivers only need "now".
+  const canSeeStory = user.role !== 'driver';
 
   if (found === undefined)
     return (
@@ -49,6 +53,19 @@ export default function Look({ state, home }: JobProps) {
       }
     >
       {found ? <Answer cylinder={found} state={state} onInfo={() => setInfo(true)} /> : <Unknown />}
+      {found && canSeeStory && (
+        <BigButton tone="teal" variant="soft" onClick={() => setStory(true)}>
+          <ClockCounterClockwise size={28} weight="bold" /> {t('look.story')}
+        </BigButton>
+      )}
+      {story && found && (
+        <LifeStory
+          state={state}
+          cylinderId={found.id}
+          people={people}
+          onClose={() => setStory(false)}
+        />
+      )}
       {info && found && (
         <Sheet title={t('common.details')} onClose={() => setInfo(false)}>
           <dl className="b-info">

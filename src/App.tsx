@@ -59,6 +59,7 @@ import CylinderLabel from './CylinderLabel';
 import PrintChallan from './PrintChallan';
 import DemoWalkthrough from './DemoWalkthrough';
 import LoginScreen from './LoginScreen';
+import LifeStory from './LifeStory';
 import { queueDelivery, listQueuedDeliveries } from './offline';
 import { allowedPartyTypes } from './party-options';
 import { availableCredit, creditNoteAvailable, depositBalance } from '../shared/finance';
@@ -298,6 +299,8 @@ export default function App() {
     id: string;
   } | null>(null);
   const [toast, setToast] = useState('');
+  // A cylinder whose full life story is open.
+  const [story, setStory] = useState<string | null>(null);
   // Basic (picture) or Office mode, chosen per user on this phone.
   const [modeChoice, setModeChoice] = useState<Record<string, AppMode>>({});
   const [search, setSearch] = useState('');
@@ -2546,6 +2549,10 @@ export default function App() {
             issueInvoice,
             receipt,
             credit,
+            lifeStory: (c: Cylinder) => {
+              setDetail(null);
+              setStory(c.id);
+            },
           }}
           permissions={{
             operate: allowed('admin', 'operations'),
@@ -2556,6 +2563,9 @@ export default function App() {
             deliver: allowed('admin', 'operations', 'driver'),
           }}
         />
+      )}
+      {story && (
+        <LifeStory state={s} cylinderId={story} people={people} onClose={() => setStory(null)} />
       )}
       {toast && (
         <div className="toast" role="status">
@@ -4563,6 +4573,7 @@ function Detail({
     issueInvoice: (o: Order) => void;
     receipt: (i: Invoice) => void;
     credit: (i: Invoice) => void;
+    lifeStory: (c: Cylinder) => void;
   };
   permissions: {
     operate: boolean;
@@ -4638,6 +4649,14 @@ function Detail({
                 <dd>{c.version}</dd>
               </div>
             </dl>
+            <button className="life-open" onClick={() => actions.lifeStory(c)}>
+              <ClockCounterClockwise size={22} weight="duotone" aria-hidden="true" />
+              <span>
+                <strong>Life story</strong>
+                <small>Every step from joining the fleet until today</small>
+              </span>
+              <ArrowRight size={18} aria-hidden="true" />
+            </button>
             <div className="detail-actions">
               {permissions.inspect && c.custody === 'plant' && c.condition !== 'retired' && (
                 <Button onClick={() => actions.inspect(c)}>Record inspection</Button>

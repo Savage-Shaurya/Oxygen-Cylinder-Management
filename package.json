@@ -13,6 +13,7 @@
     "demo:test": "tsx scripts/testing-demo.ts",
     "bundle:api": "tsx scripts/bundle-api.ts",
     "voice:clips": "tsx scripts/voice-clips.ts",
+    "demo:lifecycle": "tsx scripts/demo-lifecycle.ts",
     "test:pg": "tsx --test tests/api.test.ts tests/pg-security.test.ts"
   },
   "engines": {

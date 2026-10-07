@@ -274,6 +274,7 @@ export default function BasicApp({
             state={state}
             user={user}
             users={session.users}
+            people={session.people ?? session.users}
             run={run}
             home={home}
             open={open}

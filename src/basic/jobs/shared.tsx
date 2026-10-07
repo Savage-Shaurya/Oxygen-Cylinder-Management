@@ -15,6 +15,8 @@ export type JobProps = {
   state: AppState;
   user: User;
   users: User[];
+  /** Names of everyone in the organisation, for "who did this". */
+  people: { id: string; name: string }[];
   run: (type: string, payload: Record<string, unknown>) => Promise<ActionResult>;
   home: () => void;
   open: (job: JobId, params?: Record<string, string>) => void;

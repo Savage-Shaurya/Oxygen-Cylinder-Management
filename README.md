@@ -46,6 +46,14 @@ Drivers, and operations staff by default, open a **picture-based Simple mode** i
 
 The design and the reasons for each choice are in [docs/simplification-plan.md](docs/simplification-plan.md).
 
+## See a cylinder's whole life
+
+Sign in as **Admin**, open **Cylinders**, tap **Details** on any cylinder, then tap **Life story**. It shows every recorded step from joining the fleet until today, in plain words: safety checks, filling, quality release, the truck, driver and customer, who received it, collection and return. It also shows totals such as deliveries, customers served and times filled. In Simple mode, office roles can scan a cylinder and tap **Life story**.
+
+To see a complete example on the demo, run `npm run demo:lifecycle` while the app is running. It takes one new cylinder through the full loop using real commands, each signed in as the right role, then prints its tag.
+
+**Reports & audit** lists every movement and the permanent audit trail for admins and auditors.
+
 ## Guided demonstration
 
 Use **Demo walkthrough** in the app header for eight chapters covering the full operating loop. Follow the [15–20 minute presenter script](docs/demo-walkthrough.md). Create a fresh, isolated rehearsal dataset without overwriting earlier work:

@@ -92,6 +92,7 @@ const hi: Record<keyof typeof en, string> = {
   'look.title': 'स्कैन',
   'look.say': 'सिलेंडर स्कैन करें, पता चलेगा कि यह क्या है।',
   'look.next': 'अगला स्कैन',
+  'look.story': 'पूरी कहानी',
   'look.unknown': 'पहचाना नहीं गया। ऑफ़िस को दें।',
   'status.ready': 'भरा हुआ। तैयार है।',
   'status.wait': 'भरा हुआ। अभी जाँच नहीं हुई।',
