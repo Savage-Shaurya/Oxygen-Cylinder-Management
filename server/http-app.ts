@@ -11,6 +11,7 @@ import {
   type StoredUser,
 } from './auth.js';
 import { StoreError, hasControlChars } from './store-rules.js';
+import { createVoice, type VoiceOptions } from './voice.js';
 import type { DataStore } from './data-store.js';
 import type { ActionRequest, AppState, AuditEvent, User } from '../shared/types.ts';
 
@@ -215,6 +216,8 @@ export interface HttpAppOptions {
   trustProxy?: boolean | number | string[];
   /** Serve the built frontend from ./dist (single-server deployments only). */
   serveDist?: boolean;
+  /** Sarvam text-to-speech for spoken sentences that include names or numbers. */
+  voice?: VoiceOptions;
 }
 export function createHttpApp(store: DataStore, options: HttpAppOptions) {
   const { production } = options;
@@ -577,6 +580,19 @@ export function createHttpApp(store: DataStore, options: HttpAppOptions) {
       )
         throw new StoreError('Invalid user update');
       res.json(safeUser(await store.updateUser(actor, String(req.params.id), body)));
+    }),
+  );
+  const voice = createVoice(options.voice ?? {});
+  // Signed-in users only, CSRF-protected and rate limited: every call costs money.
+  app.post(
+    '/api/voice',
+    originGuard,
+    requireAuth,
+    csrf,
+    safe(async (req, res) => {
+      const user = res.locals.user as StoredUser;
+      const audio = await voice.speak(user.id, req.body?.text, req.body?.language);
+      res.type('audio/mpeg').send(audio);
     }),
   );
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));

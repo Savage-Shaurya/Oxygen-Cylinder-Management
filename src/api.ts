@@ -64,6 +64,28 @@ export async function logout(): Promise<void> {
   csrfToken = '';
   currentUserId = '';
 }
+/** Sarvam speech for a sentence with names or numbers; the voice key stays on the server. */
+export async function voiceAudio(text: string, language: string): Promise<ArrayBuffer> {
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+  let response: Response;
+  try {
+    response = await fetch('/api/voice', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ text, language }),
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+  } catch {
+    throw new ApiError('Connection unavailable.', 0);
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new ApiError(data?.error || `Request failed (${response.status})`, response.status);
+  }
+  return response.arrayBuffer();
+}
 export function submitAction(action: ActionRequest): Promise<ActionResult> {
   return request<ActionResult>('/actions', {
     method: 'POST',

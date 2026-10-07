@@ -1,35 +1,60 @@
 import { useEffect, useState } from 'react';
 import {
   ArrowRight,
-  Briefcase,
+  ClipboardText,
+  CurrencyInr,
   Eye,
   EyeSlash,
   SealCheck,
   Truck,
+  UserGear,
   Warehouse,
 } from '@phosphor-icons/react';
-import { ROLES, type Role } from '../shared/types';
+import type { Role } from '../shared/types';
 import { readSetting, writeSetting } from './basic/storage';
 import { Button } from './components/UI';
 
 const DEMO_PASSWORD = 'OxygenDemo!2026';
 const LAST_EMAIL = 'cylvero-last-email';
 
-const roleLabels: Record<Role, string> = {
-  admin: 'Administrator',
-  operations: 'Operations',
-  quality: 'Quality',
-  finance: 'Finance',
-  driver: 'Driver',
-  auditor: 'Auditor',
-};
-
-// Big picture cards so a worker can sign in to the demo with one tap, without reading emails.
-const demoCards: { role: Role; icon: typeof Truck; hindi: string; english: string }[] = [
-  { role: 'driver', icon: Truck, hindi: 'ड्राइवर', english: 'Driver' },
-  { role: 'operations', icon: Warehouse, hindi: 'गोदाम', english: 'Godown' },
-  { role: 'quality', icon: SealCheck, hindi: 'जाँच', english: 'Quality' },
-  { role: 'admin', icon: Briefcase, hindi: 'ऑफ़िस', english: 'Office' },
+// One big picture card per demo account, so anyone can sign in with one tap.
+const demoCards: {
+  role: Role;
+  icon: typeof Truck;
+  hindi: string;
+  english: string;
+  sees: string;
+}[] = [
+  { role: 'driver', icon: Truck, hindi: 'ड्राइवर', english: 'Driver', sees: 'Deliveries' },
+  {
+    role: 'operations',
+    icon: Warehouse,
+    hindi: 'गोदाम',
+    english: 'Godown',
+    sees: 'Load and return',
+  },
+  {
+    role: 'quality',
+    icon: SealCheck,
+    hindi: 'जाँच',
+    english: 'Quality',
+    sees: 'Checks and release',
+  },
+  { role: 'admin', icon: UserGear, hindi: 'एडमिन', english: 'Admin', sees: 'Everything' },
+  {
+    role: 'finance',
+    icon: CurrencyInr,
+    hindi: 'हिसाब',
+    english: 'Finance',
+    sees: 'Bills and payments',
+  },
+  {
+    role: 'auditor',
+    icon: ClipboardText,
+    hindi: 'ऑडिटर',
+    english: 'Auditor',
+    sees: 'Read-only reports',
+  },
 ];
 
 export default function LoginScreen({
@@ -97,7 +122,7 @@ export default function LoginScreen({
               </h2>
               <p>Tap a picture to sign in. Each one shows what that person sees.</p>
               <div className="login-roles">
-                {demoCards.map(({ role, icon: Icon, hindi, english }) => (
+                {demoCards.map(({ role, icon: Icon, hindi, english, sees }) => (
                   <button
                     key={role}
                     type="button"
@@ -109,6 +134,7 @@ export default function LoginScreen({
                     <Icon size={40} weight="duotone" aria-hidden="true" />
                     <strong lang="hi">{hindi}</strong>
                     <span>{busy === `${role}@batra.demo` ? 'Signing in…' : english}</span>
+                    <small>{sees}</small>
                   </button>
                 ))}
               </div>
@@ -117,30 +143,16 @@ export default function LoginScreen({
                   {error}
                 </div>
               )}
-              <label className="field login-more">
-                <span className="field-label">More demo accounts</span>
-                <select
-                  value=""
-                  disabled={!!busy}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    if (value === 'other') {
-                      setTyped(true);
-                      setEmail('');
-                    } else if (value) void submit(value, DEMO_PASSWORD);
-                  }}
-                >
-                  <option value="">Choose another account…</option>
-                  {ROLES.filter((role) => !demoCards.some((card) => card.role === role)).map(
-                    (role) => (
-                      <option value={`${role}@batra.demo`} key={role}>
-                        {roleLabels[role]} · {role}@batra.demo
-                      </option>
-                    ),
-                  )}
-                  <option value="other">Other account (type an email)</option>
-                </select>
-              </label>
+              <button
+                type="button"
+                className="login-back"
+                onClick={() => {
+                  setTyped(true);
+                  setEmail('');
+                }}
+              >
+                Other account (type an email) →
+              </button>
               <div className="demo-hint">
                 <strong>Demo access</strong>
                 <span>Password: {DEMO_PASSWORD}</span>

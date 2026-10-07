@@ -1175,6 +1175,18 @@ td strong {
   line-height: 1.2;
   font-family: 'Noto Sans Devanagari', 'Noto Sans', sans-serif;
 }
+.login-role small {
+  font-size: 11px;
+  opacity: 0.8;
+}
+.login-role.role-finance {
+  --role: #7a4a00;
+  --role-2: #b07a12;
+}
+.login-role.role-auditor {
+  --role: #4a4f5c;
+  --role-2: #6b7280;
+}
 .login-role span {
   font-size: 14px;
   font-weight: 600;

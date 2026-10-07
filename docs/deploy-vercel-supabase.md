@@ -50,6 +50,7 @@ You do **not** need to create any tables or security rules. The app creates its 
    |---|---|
    | `DATABASE_URL` | the link from Part A, step 8 |
    | `DATABASE_CA_CERT` | *(recommended)* the **whole** contents of the certificate file from Part A, step 9, including the `-----BEGIN CERTIFICATE-----` and `-----END CERTIFICATE-----` lines |
+   | `SARVAM_API_KEY` | *(for voice)* your Sarvam AI key. Sentences with names or numbers are spoken by Sarvam through the server. Without it, those sentences stay silent; recorded sentences still play |
 
 6. Click **Deploy** and wait (2–3 minutes).
    - ✅ You see **Congratulations** and a preview of the site.

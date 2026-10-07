@@ -20,7 +20,13 @@ async function build(): Promise<Express> {
     ssl: process.env.DATABASE_SSL !== 'disable',
   });
   // Vercel overwrites X-Forwarded-For and serves over HTTPS, so its proxy hop is trusted.
-  return createHttpApp(store, { production: true, trustProxy: 1, serveDist: false });
+  return createHttpApp(store, {
+    production: true,
+    trustProxy: 1,
+    serveDist: false,
+    // Set SARVAM_API_KEY in Vercel; without it, live sentences stay silent (clips still play).
+    voice: { apiKey: process.env.SARVAM_API_KEY?.trim() || undefined },
+  });
 }
 
 /** Restores the original /api/... path from the rewrite in vercel.json. */

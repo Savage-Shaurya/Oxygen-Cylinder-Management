@@ -15,14 +15,16 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import en from '../src/i18n/en';
 import hi from '../src/i18n/hi';
+import { VOICE, VOICE_LANGUAGES } from '../shared/voice';
 
 const OUT = resolve('public/voice');
-const MODEL = process.env.VOICE_MODEL ?? 'bulbul:v3';
-const SPEAKER = process.env.VOICE_SPEAKER ?? 'priya';
-const PACE = Number(process.env.VOICE_PACE ?? 0.95);
+// The same voice as live speech (shared/voice.ts), so recorded and live sentences match.
+const MODEL = VOICE.model;
+const SPEAKER = VOICE.speaker;
+const PACE = VOICE.pace;
 const languages = [
-  { id: 'hi', code: 'hi-IN', table: hi as Record<string, string> },
-  { id: 'en', code: 'en-IN', table: en as Record<string, string> },
+  { id: 'hi', code: VOICE_LANGUAGES.hi, table: hi as Record<string, string> },
+  { id: 'en', code: VOICE_LANGUAGES.en, table: en as Record<string, string> },
 ] as const;
 
 export type VoiceManifest = Record<string, Record<string, string>>;
@@ -62,8 +64,8 @@ async function speak(key: string, text: string, language: string): Promise<Buffe
         model: MODEL,
         speaker: SPEAKER,
         pace: PACE,
-        speech_sample_rate: 22050,
-        output_audio_codec: 'mp3',
+        speech_sample_rate: VOICE.sampleRate,
+        output_audio_codec: VOICE.codec,
       }),
     });
     if (response.ok) {
