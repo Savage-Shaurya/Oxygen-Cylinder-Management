@@ -46,6 +46,12 @@ Drivers, and operations staff by default, open a **picture-based Simple mode** i
 
 The design and the reasons for each choice are in [docs/simplification-plan.md](docs/simplification-plan.md).
 
+## QR codes: download, print, upload
+
+- **New cylinder:** after **Register cylinder**, its page opens straight away with **Download QR** (a PNG with the QR, tag, serial, gas and size, ready to print or share on WhatsApp) and **Print label**.
+- **Many cylinders:** after a CSV import, use **Cylinders → More → Print QR labels**. It prints a sheet of labels for the list on screen, and the print dialog can save it as a PDF.
+- **No camera, or the camera can't read the label?** Every scan screen has a photo option: **Upload a QR image** in Office mode, and **Photo / QR की फ़ोटो चुनें** in Simple mode. Pick a photo or screenshot from the gallery and it's read automatically, like "scan from gallery" in payment apps. Uploading a cylinder's QR opens its page, and office roles can open its **Life story** from there.
+
 ## See a cylinder's whole life
 
 Sign in as **Admin**, open **Cylinders**, tap **Details** on any cylinder, then tap **Life story**. It shows every recorded step from joining the fleet until today, in plain words: safety checks, filling, quality release, the truck, driver and customer, who received it, collection and return. It also shows totals such as deliveries, customers served and times filled. In Simple mode, office roles can scan a cylinder and tap **Life story**.

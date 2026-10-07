@@ -42,7 +42,7 @@ const hi: Record<keyof typeof en, string> = {
 
   'scan.say': 'कैमरा सिलेंडर के कोड पर रखें।',
   'scan.starting': 'कैमरा खुल रहा है',
-  'scan.noCamera': 'कैमरा नहीं है। कोड लिखें या लिस्ट से चुनें।',
+  'scan.noCamera': 'कैमरा नहीं है। QR की फ़ोटो चुनें, या कोड लिखें।',
   'scan.blocked': 'कैमरा की इजाज़त नहीं है। इजाज़त दें, या कोड लिखें।',
   'scan.light': 'लाइट',
   'scan.type': 'कोड लिखें',
@@ -52,6 +52,10 @@ const hi: Record<keyof typeof en, string> = {
   'scan.again': 'यह पहले ही स्कैन हो गया।',
   'scan.unknown': 'यह कोड पहचाना नहीं गया।',
   'scan.camera': 'कैमरा',
+  'scan.photo': 'फ़ोटो',
+  'scan.photoPick': 'QR की फ़ोटो चुनें',
+  'scan.photoReading': 'फ़ोटो पढ़ रहे हैं',
+  'scan.photoFailed': 'इस फ़ोटो में QR नहीं मिला। साफ़ फ़ोटो लें।',
 
   'give.title': 'दिया',
   'give.who.say': 'किसे दे रहे हैं? तस्वीर पर दबाएँ।',

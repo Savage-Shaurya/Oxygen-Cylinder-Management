@@ -55,7 +55,7 @@ import {
 } from './components/UI';
 import OfflinePanel from './OfflinePanel';
 import ScannerInput from './ScannerInput';
-import CylinderLabel from './CylinderLabel';
+import CylinderLabel, { printLabelSheet } from './CylinderLabel';
 import PrintChallan from './PrintChallan';
 import DemoWalkthrough from './DemoWalkthrough';
 import LoginScreen from './LoginScreen';
@@ -672,7 +672,7 @@ export default function App() {
         { name: 'certificate', label: 'Certificate reference', required: true },
       ],
       submit: async (v) => {
-        await run('cylinder.register', {
+        const result = await run('cylinder.register', {
           ...v,
           serial: text(v.serial),
           tag: text(v.tag),
@@ -680,6 +680,11 @@ export default function App() {
           size: text(v.size),
           certificate: text(v.certificate),
         });
+        // Open the new cylinder so its QR label can be downloaded or printed straight away.
+        if (result.entityId) {
+          setDetail({ kind: 'cylinder', id: result.entityId });
+          setToast('Cylinder registered. Download or print its QR label below.');
+        }
       },
     });
   }
@@ -2139,6 +2144,9 @@ export default function App() {
           return row;
         });
         await run('cylinders.import', { rows });
+        setToast(
+          `Imported ${rows.length} cylinders. Print their QR labels from More → Print QR labels.`,
+        );
       },
     });
   }
@@ -3008,6 +3016,11 @@ function Cylinders({
                   label: 'Export CSV',
                   icon: <DownloadSimple size={16} aria-hidden="true" />,
                   onSelect: exportCsv,
+                },
+                {
+                  label: `Print QR labels (${filtered.length})`,
+                  icon: <Printer size={16} aria-hidden="true" />,
+                  onSelect: () => setScanMessage(printLabelSheet(filtered) ?? ''),
                 },
               ]}
             />

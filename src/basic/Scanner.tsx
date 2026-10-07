@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { IScannerControls } from '@zxing/browser';
-import { CameraSlash, Flashlight, Keyboard, ListBullets } from '@phosphor-icons/react';
+import {
+  CameraSlash,
+  Flashlight,
+  Image as ImageIcon,
+  Keyboard,
+  ListBullets,
+} from '@phosphor-icons/react';
 import { t } from '../i18n';
+import { readCodeFromImage } from '../qr-image';
 import { Sheet } from './components';
+import { scanReject } from './feedback';
 import { breathe } from './motion';
 
 export type PickOption = { code: string; label: string; note?: string };
@@ -12,16 +20,20 @@ type CameraState = 'starting' | 'live' | 'blocked' | 'none';
 /**
  * A camera that stays open and keeps reading codes until the screen closes.
  * The same code is ignored for two seconds so one cylinder is not counted twice.
- * Handheld Bluetooth scanners that "type" a code and press Enter also work.
+ * Handheld Bluetooth scanners that "type" a code and press Enter also work, and a photo or
+ * screenshot of the QR can be picked from the gallery and read automatically.
  */
 export default function Scanner({
   onCode,
   options = [],
   paused = false,
+  readImage = readCodeFromImage,
 }: {
   onCode: (code: string) => void;
   options?: PickOption[];
   paused?: boolean;
+  /** Reads a code from a picked photo; replaceable in tests. */
+  readImage?: (file: Blob) => Promise<string | null>;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const controls = useRef<IScannerControls | null>(null);
@@ -36,6 +48,29 @@ export default function Scanner({
   const [torchReady, setTorchReady] = useState(false);
   const [sheet, setSheet] = useState<'type' | 'list' | null>(null);
   const [typed, setTyped] = useState('');
+  const [photo, setPhoto] = useState<'idle' | 'reading' | 'failed'>('idle');
+  const picker = useRef<HTMLInputElement>(null);
+
+  async function readPhoto(file: File | undefined) {
+    if (!file) return;
+    setPhoto('reading');
+    let code: string | null = null;
+    try {
+      code = await readImage(file);
+    } catch {
+      code = null;
+    }
+    if (picker.current) picker.current.value = '';
+    if (!code) {
+      setPhoto('failed');
+      scanReject(t('scan.photoFailed'));
+      return;
+    }
+    setPhoto('idle');
+    recent.current = { code: '', at: 0 };
+    deliver(code);
+  }
+  const pickPhoto = () => picker.current?.click();
 
   function deliver(raw: string) {
     const code = raw.trim();
@@ -133,6 +168,9 @@ export default function Scanner({
           <div className="b-camera-off">
             <CameraSlash size={46} weight="duotone" />
             <p>{t(camera === 'blocked' ? 'scan.blocked' : 'scan.noCamera')}</p>
+            <button className="b-big solid tone-purple b-photo-main" onClick={pickPhoto}>
+              <ImageIcon size={30} weight="fill" /> {t('scan.photoPick')}
+            </button>
           </div>
         )}
         {camera === 'starting' && <div className="b-camera-wait">{t('scan.starting')}</div>}
@@ -145,7 +183,32 @@ export default function Scanner({
           </div>
         )}
       </div>
+      <input
+        ref={picker}
+        type="file"
+        accept="image/*"
+        hidden
+        aria-label={t('scan.photoPick')}
+        onChange={(event) => void readPhoto(event.target.files?.[0])}
+      />
+      {photo !== 'idle' && (
+        <div className={`b-photo-state ${photo}`} role={photo === 'failed' ? 'alert' : 'status'}>
+          {photo === 'reading' ? (
+            <>
+              <span className="b-spinner" aria-hidden="true" /> {t('scan.photoReading')}
+            </>
+          ) : (
+            t('scan.photoFailed')
+          )}
+        </div>
+      )}
       <div className="b-scan-tools">
+        {(camera === 'live' || camera === 'starting') && (
+          <button className="b-tool" onClick={pickPhoto}>
+            <ImageIcon size={24} />
+            <span>{t('scan.photo')}</span>
+          </button>
+        )}
         {torchReady && (
           <button
             className={`b-tool ${torch ? 'on' : ''}`}

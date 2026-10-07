@@ -659,6 +659,29 @@ button.b-card:active {
 .b-camera-off p {
   margin: 0;
 }
+.b-photo-main {
+  margin-top: 6px;
+  width: auto;
+  min-height: 64px;
+  padding: 10px 22px;
+  font-size: 21px;
+}
+.b-photo-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  font-weight: 800;
+  font-size: 18px;
+  background: #eef2fb;
+  color: var(--b-blue);
+}
+.b-photo-state.failed {
+  background: #fde8e6;
+  color: var(--b-red);
+}
 .b-camera-wait {
   position: absolute;
   inset: auto 0 14px;

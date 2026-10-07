@@ -1,17 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
-import { Barcode, Camera, X } from '@phosphor-icons/react';
+import { Barcode, Camera, Image as ImageIcon, X } from '@phosphor-icons/react';
 import type { IScannerControls } from '@zxing/browser';
+import { readCodeFromImage } from './qr-image';
 
 export default function ScannerInput({
   onScan,
   placeholder = 'Scan or enter a cylinder ID',
+  readImage = readCodeFromImage,
 }: {
   onScan: (value: string) => void;
   placeholder?: string;
+  /** Reads a code from an uploaded photo or screenshot; replaceable in tests. */
+  readImage?: (file: Blob) => Promise<string | null>;
 }) {
   const [value, setValue] = useState('');
   const [active, setActive] = useState(false);
   const [error, setError] = useState('');
+  const [reading, setReading] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+  async function readPhoto(file: File | undefined) {
+    if (!file) return;
+    setError('');
+    setReading(true);
+    let code: string | null = null;
+    try {
+      code = await readImage(file);
+    } catch {
+      code = null;
+    } finally {
+      setReading(false);
+      if (picker.current) picker.current.value = '';
+    }
+    if (code) callback.current(code);
+    else setError('No QR or barcode was found in that image. Try a sharper photo or screenshot.');
+  }
   const video = useRef<HTMLVideoElement>(null);
   const controls = useRef<IScannerControls | null>(null);
   const callback = useRef(onScan);
@@ -85,6 +107,24 @@ export default function ScannerInput({
           autoComplete="off"
           style={{ minWidth: 0, flex: 1 }}
         />
+        <input
+          ref={picker}
+          type="file"
+          accept="image/*"
+          hidden
+          aria-label="QR image file"
+          onChange={(event) => void readPhoto(event.target.files?.[0])}
+        />
+        <button
+          className="btn button"
+          type="button"
+          aria-label="Upload a QR image"
+          title="Upload a photo or screenshot of the QR"
+          disabled={reading}
+          onClick={() => picker.current?.click()}
+        >
+          <ImageIcon size={18} />
+        </button>
         <button
           className="btn button"
           type="button"
@@ -114,6 +154,11 @@ export default function ScannerInput({
           />
           <p style={{ fontSize: 13 }}>Point the camera at the cylinder’s QR or barcode.</p>
         </div>
+      )}
+      {reading && (
+        <p role="status" style={{ fontSize: 13, marginTop: 8 }}>
+          Reading the image…
+        </p>
       )}
       {error && (
         <p role="alert" style={{ fontSize: 13, color: '#9e452b', marginTop: 8 }}>

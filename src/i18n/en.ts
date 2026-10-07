@@ -41,7 +41,7 @@ const en = {
 
   'scan.say': 'Point the camera at the code on the cylinder.',
   'scan.starting': 'Opening camera',
-  'scan.noCamera': 'No camera. Type the code or pick from the list.',
+  'scan.noCamera': 'No camera. Choose a photo of the QR, or type the code.',
   'scan.blocked': 'Camera not allowed. Allow the camera, or type the code.',
   'scan.light': 'Light',
   'scan.type': 'Type code',
@@ -51,6 +51,10 @@ const en = {
   'scan.again': 'Already scanned.',
   'scan.unknown': 'This code is not known.',
   'scan.camera': 'Camera',
+  'scan.photo': 'Photo',
+  'scan.photoPick': 'Choose QR photo',
+  'scan.photoReading': 'Reading the photo',
+  'scan.photoFailed': 'No QR found in this photo. Try a clearer photo.',
 
   'give.title': 'Give',
   'give.who.say': 'Who are you giving to? Tap the picture.',
