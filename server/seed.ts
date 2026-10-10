@@ -28,8 +28,8 @@ export function createSeedState(at = new Date().toISOString()): AppState {
   const before = (days: number) => shift(calendar, -days);
   const after = (days: number) => shift(calendar, days);
   const branches = [
-    { id: 'b-delhi', name: 'Delhi Plant & Distribution', city: 'Delhi' },
-    { id: 'b-faridabad', name: 'Faridabad Distribution', city: 'Faridabad' },
+    { id: 'b-delhi', name: 'Demo Delhi Plant & Godown (Okhla)', city: 'Delhi' },
+    { id: 'b-faridabad', name: 'Demo Faridabad Distribution Godown', city: 'Faridabad' },
   ];
   const parties: Party[] = [
     {
@@ -79,7 +79,7 @@ export function createSeedState(at = new Date().toISOString()): AppState {
     },
     {
       id: 'p-home-2',
-      name: 'Demo Home Oxygen Service B',
+      name: 'Demo Aarogya Home Oxygen Care',
       type: 'homecare',
       contact: 'Demo Service Coordinator',
       phone: '00000 01004',
@@ -94,7 +94,7 @@ export function createSeedState(at = new Date().toISOString()): AppState {
     },
     {
       id: 'p-industry-1',
-      name: 'Demo Precision Fabricators',
+      name: 'Demo Okhla Precision Fabricators',
       type: 'industrial',
       contact: 'Demo Purchase Office',
       phone: '00000 01005',
@@ -109,7 +109,7 @@ export function createSeedState(at = new Date().toISOString()): AppState {
     },
     {
       id: 'p-supplier-1',
-      name: 'Demo Cylinder Service Works',
+      name: 'Demo Hydrotest & Valve Services',
       type: 'supplier',
       contact: 'Demo Vendor Desk',
       phone: '00000 01006',
@@ -124,7 +124,7 @@ export function createSeedState(at = new Date().toISOString()): AppState {
     },
     {
       id: 'p-supplier-2',
-      name: 'Demo Filled Oxygen Supply',
+      name: 'Demo Haryana Medical Gases (filled supply)',
       type: 'supplier',
       contact: 'Demo Vendor Desk',
       phone: '00000 01007',
@@ -136,6 +136,38 @@ export function createSeedState(at = new Date().toISOString()): AppState {
       dailyRentalPaise: 0,
       freeDays: 0,
       depositPaise: 0,
+    },
+    // Demo story customers (see docs/demo-script.md). Added after the original records so
+    // existing lookups such as "first hospital" still find the same party.
+    {
+      id: 'p-hospital-3',
+      name: 'Demo Sanjeevani District Hospital',
+      type: 'hospital',
+      contact: 'Demo Medical Gas Stores',
+      phone: '00000 01008',
+      address: 'Sample Hospital Road, Sarita Vihar',
+      city: 'Delhi',
+      gstin: 'DEMO-GST-008',
+      branchId: 'b-delhi',
+      creditLimitPaise: 30000000,
+      dailyRentalPaise: 18000,
+      freeDays: 2,
+      depositPaise: 300000,
+    },
+    {
+      id: 'p-clinic-1',
+      name: 'Demo Shanti Community Clinic',
+      type: 'hospital',
+      contact: 'Demo Clinic Manager',
+      phone: '00000 01009',
+      address: 'Example Market, Jasola',
+      city: 'Delhi',
+      gstin: 'DEMO-GST-009',
+      branchId: 'b-delhi',
+      creditLimitPaise: 8000000,
+      dailyRentalPaise: 20000,
+      freeDays: 1,
+      depositPaise: 300000,
     },
   ];
   const cylinders: Cylinder[] = [];
@@ -360,6 +392,322 @@ export function createSeedState(at = new Date().toISOString()): AppState {
   const vehicle = cylinders.find((c) => c.id === 'c-004')!;
   vehicle.custody = 'vehicle';
   vehicle.custodianId = 'o-partial-1';
+
+  // ---------- Demo story anchors (docs/demo-script.md) ----------
+  // Extra records for the presenter's walkthrough, each findable by a memorable tag.
+  // They are appended after the original 84 cylinders, 4 orders and 6 batches, so every
+  // existing id, count and relationship that the tests rely on is unchanged.
+  //   DEMO-LOAD-1/2   full, filled today, batch DEMO-BATCH-006 awaiting Quality release
+  //   DEMO-HOLD-1     pulled out of DEMO-BATCH-006 by Quality: on hold, dispatch refuses it
+  //   DEMO-EXPIRED-1  full and released, but its test date has passed: dispatch refuses it
+  //   DEMO-GIVE-1/2   on the demo driver's truck for DEMO-ORD-007 (clinic), ready to Give
+  //   DEMO-TAKE-1/2   at Demo Sanjeevani District Hospital since DEMO-ORD-005, to Take back
+  //   DEMO-CLINIC-1   at Demo Shanti Community Clinic since DEMO-ORD-006, to Take back
+  //   DEMO-SUP-1/2    at the hydrotest supplier for periodic testing
+  // DEMO-ORD-008 is the open hospital order for exactly 2 that "Load truck" fills live.
+  const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 3_600_000).toISOString();
+  const anchorExceptions: AppState['exceptions'] = [];
+  const anchorAudit: AuditEvent[] = [];
+  const anchorMove = (
+    c: Cylinder,
+    action: string,
+    from: string,
+    to: string,
+    at: string,
+    actor: 'u-ops' | 'u-quality' | 'u-driver',
+    reference: string,
+    notes: string,
+    beforeBatch?: string,
+  ) =>
+    movements.push({
+      id: `m-demo-${action}-${c.id}`,
+      cylinderId: c.id,
+      action,
+      from,
+      to,
+      at,
+      actorId: actor,
+      actorName:
+        actor === 'u-ops' ? 'Demo Operations' : actor === 'u-quality' ? 'Demo Quality' : 'Demo Driver',
+      reference,
+      notes,
+      ...(beforeBatch ? { before: { batchId: beforeBatch } } : {}),
+    });
+  const anchor = (n: number, tag: string, fields: Partial<Cylinder> = {}): Cylinder => {
+    const c: Cylinder = {
+      id: `c-${String(n).padStart(3, '0')}`,
+      serial: `DEMO-OX-${String(n).padStart(5, '0')}`,
+      tag,
+      manufacturer: n % 2 ? 'Demo Cylinder Works' : 'Demo Alloy Works',
+      gas: 'Medical oxygen',
+      size: 'B',
+      ownerId: 'company',
+      branchId: 'b-delhi',
+      custody: 'plant',
+      custodianId: 'b-delhi',
+      condition: 'serviceable',
+      contents: 'full',
+      testDue: after(400 + n),
+      lastTest: before(300 + n),
+      certificate: `DEMO-TEST-${String(n).padStart(4, '0')}`,
+      version: 1,
+      createdAt: `${before(320 + n)}T09:00:00.000Z`,
+      ...fields,
+    };
+    cylinders.push(c);
+    anchorMove(c, 'registered', 'new', 'plant:b-delhi', c.createdAt, 'u-ops', c.serial, 'Synthetic demonstration asset');
+    anchorMove(c, 'inspection', 'plant:b-delhi', 'plant:b-delhi', `${before(10)}T04:00:00.000Z`, 'u-quality', c.id, 'Synthetic pre-fill check: serviceable');
+    return c;
+  };
+  const give1 = anchor(85, 'DEMO-GIVE-1');
+  const give2 = anchor(86, 'DEMO-GIVE-2');
+  const take1 = anchor(87, 'DEMO-TAKE-1');
+  const take2 = anchor(88, 'DEMO-TAKE-2');
+  const clinic1 = anchor(89, 'DEMO-CLINIC-1');
+  const load1 = anchor(90, 'DEMO-LOAD-1');
+  const load2 = anchor(91, 'DEMO-LOAD-2');
+  const hold1 = anchor(92, 'DEMO-HOLD-1');
+  // Tested about five years ago; the test lapsed two days ago, after its batch was released.
+  const expired1 = anchor(93, 'DEMO-EXPIRED-1', {
+    lastTest: before(1827),
+    testDue: before(2),
+    certificate: 'DEMO-TEST-0093',
+  });
+  const sup1 = anchor(94, 'DEMO-SUP-1', { testDue: after(5), contents: 'empty' });
+  const sup2 = anchor(95, 'DEMO-SUP-2', { testDue: after(5), contents: 'empty' });
+
+  // DEMO-BATCH-005: released nine days ago. Its cylinders went to the district hospital and
+  // the clinic, so a recall of this batch traces real seeded deliveries.
+  const tracedBatch: Batch = {
+    id: 'batch-5',
+    number: 'DEMO-BATCH-005',
+    branchId: 'b-delhi',
+    gas: 'Medical oxygen',
+    cylinderIds: [give1, give2, take1, take2, clinic1, expired1].map((c) => c.id),
+    source: 'Demo plant fill (Tank 2)',
+    operator: 'u-ops',
+    fillOperator: 'Demo Shift A Operator',
+    status: 'released',
+    createdAt: `${before(9)}T05:00:00.000Z`,
+    releasedAt: `${before(9)}T08:00:00.000Z`,
+    releasedBy: 'u-quality',
+    certificate: 'DEMO-QC-5',
+    qualityNotes: 'Synthetic quality release (demo data, not a real certificate)',
+  };
+  // DEMO-BATCH-006: filled this morning by Operations; waits for Quality to release it.
+  const awaitingBatch: Batch = {
+    id: 'batch-6',
+    number: 'DEMO-BATCH-006',
+    branchId: 'b-delhi',
+    gas: 'Medical oxygen',
+    cylinderIds: [load1.id, load2.id],
+    source: 'Demo plant fill (Tank 3)',
+    operator: 'u-ops',
+    fillOperator: 'Demo Shift A Operator',
+    status: 'awaiting_release',
+    createdAt: hoursAgo(3),
+    rejectedCylinderIds: [hold1.id],
+  };
+  batches.push(tracedBatch, awaitingBatch);
+  for (const c of [give1, give2, take1, take2, clinic1, expired1]) {
+    c.batchId = tracedBatch.id;
+    anchorMove(c, 'fill', 'plant:b-delhi', 'plant:b-delhi', tracedBatch.createdAt, 'u-ops', tracedBatch.id, 'Synthetic plant fill');
+  }
+  for (const c of [load1, load2, hold1]) {
+    c.batchId = awaitingBatch.id;
+    anchorMove(c, 'fill', 'plant:b-delhi', 'plant:b-delhi', awaitingBatch.createdAt, 'u-ops', awaitingBatch.id, 'Synthetic plant fill');
+  }
+  // Quality pulled DEMO-HOLD-1 out of the batch (same effect as the batch.reject command).
+  const holdAt = hoursAgo(2.5);
+  anchorMove(hold1, 'batch_reject', 'plant:b-delhi', 'plant:b-delhi', holdAt, 'u-quality', awaitingBatch.id, 'Valve leak suspected at seal check (synthetic)');
+  hold1.batchId = undefined;
+  hold1.condition = 'quarantine';
+  hold1.contents = 'unknown';
+  anchorExceptions.push(
+    {
+      id: 'ex-seed-2',
+      at: holdAt,
+      type: 'quality_hold',
+      summary: 'DEMO-HOLD-1 on hold: valve leak suspected at seal check. Do not load until Quality clears it.',
+      entityId: hold1.id,
+      status: 'open',
+      branchId: 'b-delhi',
+    },
+    {
+      id: 'ex-seed-3',
+      at: `${before(1)}T03:30:00.000Z`,
+      type: 'test_overdue',
+      summary: 'DEMO-EXPIRED-1 test date has passed. Send for hydrotest; dispatch is blocked.',
+      entityId: expired1.id,
+      status: 'open',
+      branchId: 'b-delhi',
+    },
+  );
+  anchorAudit.push({
+    id: 'audit-demo-hold',
+    at: holdAt,
+    actorId: 'u-quality',
+    actorName: 'Demo Quality',
+    action: 'batch.reject',
+    entityId: awaitingBatch.id,
+    summary: `${hold1.serial} rejected from ${awaitingBatch.number}: valve leak suspected`,
+  });
+  // DEMO-SUP-1/2 are with the hydrotest supplier (same effect as supplier.send).
+  for (const c of [sup1, sup2]) {
+    anchorMove(c, 'supplier_send', 'plant:b-delhi', 'supplier:p-supplier-1', `${before(4)}T06:00:00.000Z`, 'u-ops', 'DEMO-SEND-001', 'test: periodic hydrotest due soon');
+    c.custody = 'supplier';
+    c.custodianId = 'p-supplier-1';
+    c.contents = 'unknown';
+    c.condition = 'inspection_due';
+  }
+  anchorAudit.push({
+    id: 'audit-demo-supplier-send',
+    at: `${before(4)}T06:00:00.000Z`,
+    actorId: 'u-ops',
+    actorName: 'Demo Operations',
+    action: 'supplier.send',
+    entityId: 'p-supplier-1',
+    summary: 'DEMO-SEND-001: 2 cylinders sent for periodic hydrotest',
+  });
+
+  const routeDispatchAt = hoursAgo(2);
+  orders.push(
+    {
+      id: 'o-delivered-2',
+      number: 'DEMO-ORD-005',
+      partyId: 'p-hospital-3',
+      branchId: 'b-delhi',
+      gas: 'Medical oxygen',
+      size: 'B',
+      quantity: 2,
+      priority: 'normal',
+      dueDate: before(8),
+      notes: 'Demo ward replenishment',
+      unitPricePaise: 148000,
+      status: 'delivered',
+      cylinderIds: [take1.id, take2.id],
+      deliveredIds: [take1.id, take2.id],
+      vehicle: 'DL 02 DEMO',
+      driverId: 'u-driver',
+      createdAt: `${before(9)}T09:00:00.000Z`,
+      recipient: 'Demo Stores Pharmacist',
+      deliveredAt: `${before(8)}T07:00:00.000Z`,
+      deliveryProofs: [
+        {
+          cylinderIds: [take1.id, take2.id],
+          recipient: 'Demo Stores Pharmacist',
+          at: `${before(8)}T07:00:00.000Z`,
+          actorId: 'u-driver',
+          notes: 'Synthetic delivery proof',
+        },
+      ],
+    },
+    {
+      id: 'o-delivered-3',
+      number: 'DEMO-ORD-006',
+      partyId: 'p-clinic-1',
+      branchId: 'b-delhi',
+      gas: 'Medical oxygen',
+      size: 'B',
+      quantity: 1,
+      priority: 'normal',
+      dueDate: before(7),
+      notes: 'Demo clinic standby cylinder',
+      unitPricePaise: 150000,
+      status: 'delivered',
+      cylinderIds: [clinic1.id],
+      deliveredIds: [clinic1.id],
+      vehicle: 'DL 02 DEMO',
+      driverId: 'u-driver',
+      createdAt: `${before(8)}T11:00:00.000Z`,
+      recipient: 'Demo Clinic Manager',
+      deliveredAt: `${before(7)}T06:30:00.000Z`,
+      deliveryProofs: [
+        {
+          cylinderIds: [clinic1.id],
+          recipient: 'Demo Clinic Manager',
+          at: `${before(7)}T06:30:00.000Z`,
+          actorId: 'u-driver',
+          notes: 'Synthetic delivery proof',
+        },
+      ],
+    },
+    {
+      id: 'o-route-1',
+      number: 'DEMO-ORD-007',
+      partyId: 'p-clinic-1',
+      branchId: 'b-delhi',
+      gas: 'Medical oxygen',
+      size: 'B',
+      quantity: 2,
+      priority: 'normal',
+      dueDate: date,
+      notes: 'Demo clinic top-up, on the truck now',
+      unitPricePaise: 150000,
+      status: 'dispatched',
+      cylinderIds: [give1.id, give2.id],
+      deliveredIds: [],
+      vehicle: 'DL 02 DEMO',
+      driverId: 'u-driver',
+      createdAt: `${before(1)}T10:30:00.000Z`,
+    },
+    {
+      id: 'o-open-3',
+      number: 'DEMO-ORD-008',
+      partyId: 'p-hospital-3',
+      branchId: 'b-delhi',
+      gas: 'Medical oxygen',
+      size: 'B',
+      quantity: 2,
+      priority: 'normal',
+      dueDate: date,
+      notes: 'Demo ward replenishment, 2 x size B',
+      unitPricePaise: 148000,
+      status: 'open',
+      cylinderIds: [],
+      deliveredIds: [],
+      vehicle: '',
+      driverId: '',
+      createdAt: `${before(1)}T13:00:00.000Z`,
+    },
+  );
+  for (const [c, orderId, partyId] of [
+    [take1, 'o-delivered-2', 'p-hospital-3'],
+    [take2, 'o-delivered-2', 'p-hospital-3'],
+    [clinic1, 'o-delivered-3', 'p-clinic-1'],
+    [give1, 'o-route-1', ''],
+    [give2, 'o-route-1', ''],
+  ] as const) {
+    const order = orders.find((o) => o.id === orderId)!;
+    const dispatchedAt = partyId ? `${order.deliveredAt!.slice(0, 10)}T04:30:00.000Z` : routeDispatchAt;
+    anchorMove(c, 'dispatch', 'plant:b-delhi', `vehicle:${order.id}`, dispatchedAt, 'u-ops', order.id, 'Synthetic route manifest');
+    c.custody = 'vehicle';
+    c.custodianId = order.id;
+    if (!partyId) continue;
+    anchorMove(c, 'delivery', `vehicle:${order.id}`, `customer:${partyId}`, order.deliveredAt!, 'u-driver', order.id, 'Synthetic delivery proof', tracedBatch.id);
+    c.custody = 'customer';
+    c.custodianId = partyId;
+    const party = parties.find((p) => p.id === partyId)!;
+    rentals.push({
+      id: `r-${c.id}`,
+      cylinderId: c.id,
+      partyId,
+      orderId,
+      start: order.deliveredAt!.slice(0, 10),
+      dailyRatePaise: party.dailyRentalPaise,
+      freeDays: party.freeDays,
+    });
+  }
+  anchorAudit.push({
+    id: 'audit-demo-route-dispatch',
+    at: routeDispatchAt,
+    actorId: 'u-ops',
+    actorName: 'Demo Operations',
+    action: 'order.dispatch',
+    entityId: 'o-route-1',
+    summary: 'DEMO-ORD-007: 2 cylinders loaded on DL 02 DEMO for the demo driver',
+  });
+
   for (const order of orders.filter((o) => o.cylinderIds.length)) {
     const party = parties.find((p) => p.id === order.partyId)!;
     order.challanSnapshot = {
@@ -448,6 +796,32 @@ export function createSeedState(at = new Date().toISOString()): AppState {
       notes: 'Synthetic demonstration invoice',
     },
   ];
+  // Anchor: the district hospital's earlier delivery (DEMO-ORD-005), billed and part paid.
+  invoices.push({
+    id: 'inv-seed-4',
+    number: 'DEMO-INV-004',
+    partyId: 'p-hospital-3',
+    branchId: 'b-delhi',
+    type: 'gas',
+    sourceId: 'o-delivered-2',
+    issuedAt: `${before(7)}T10:00:00.000Z`,
+    dueDate: after(23),
+    lines: [
+      {
+        description: 'Medical oxygen B delivery DEMO-ORD-005',
+        quantity: 2,
+        unitPricePaise: 148000,
+        amountPaise: 296000,
+      },
+    ],
+    subtotalPaise: 296000,
+    taxBps: 1200,
+    taxPaise: 35520,
+    totalPaise: 331520,
+    paidPaise: 100000,
+    status: 'partial',
+    notes: 'Synthetic demonstration invoice',
+  });
   for (const invoice of invoices) {
     const party = parties.find((p) => p.id === invoice.partyId)!;
     invoice.billTo = {
@@ -499,6 +873,18 @@ export function createSeedState(at = new Date().toISOString()): AppState {
       kind: 'deposit',
     },
   ];
+  receipts.push({
+    id: 'receipt-seed-4',
+    number: 'DEMO-RCPT-004',
+    partyId: 'p-hospital-3',
+    invoiceId: 'inv-seed-4',
+    amountPaise: 100000,
+    method: 'bank',
+    reference: 'DEMO-UTR-004',
+    at: `${before(3)}T12:00:00.000Z`,
+    actorId: 'u-finance',
+    kind: 'payment',
+  });
   const audit: AuditEvent[] = [
     {
       id: 'audit-seed-1',
@@ -509,6 +895,7 @@ export function createSeedState(at = new Date().toISOString()): AppState {
       entityId: '',
       summary: 'Synthetic demonstration state created; no real customer or patient records',
     },
+    ...anchorAudit,
   ];
   for (const batch of batches) {
     audit.push({
@@ -607,6 +994,7 @@ export function createSeedState(at = new Date().toISOString()): AppState {
         entityId: 'c-047',
         status: 'open',
       },
+      ...anchorExceptions,
     ],
   };
 }

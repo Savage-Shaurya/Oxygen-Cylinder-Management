@@ -132,6 +132,11 @@ function set(label: string, value: string) {
 function openButton(label: string) {
   fireEvent.click(screen.getByRole('button', { name: label }));
 }
+// The demo story can have several deliveries ready to bill; pick the intended order's row.
+function issueInvoiceFor(orderNumber: string) {
+  const row = screen.getByText(orderNumber).closest('span')!.parentElement!;
+  fireEvent.click(within(row).getByRole('button', { name: 'Issue invoice' }));
+}
 // Less-used header actions live in the page's "More" menu (simplification plan 5.3).
 function openMenuItem(label: string) {
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
@@ -312,7 +317,7 @@ test('invoice, payment, deposit, and refund forms convert percentages and rupees
     openButton('Billing & rentals');
     const invoiceSearch = screen.getByLabelText('Search invoice or customer…') as HTMLInputElement;
     fireEvent.change(invoiceSearch, { target: { value: 'missing-invoice' } });
-    openButton('Issue invoice');
+    issueInvoiceFor(h.state().orders.find((o) => o.id === 'o-delivered-1')!.number);
     set('Approved gas price per cylinder *', '1999.00');
     set('Tax rate (%) *', '18.50');
     submit();
@@ -366,7 +371,7 @@ test('a credited delivery can be invoiced again with the current approved price'
     await screen.findByRole('button', { name: 'Customers' });
     openButton('Billing & rentals');
     assert.match(screen.getByText('DEMO-ORD-001').textContent || '', /DEMO-ORD-001/);
-    openButton('Issue invoice');
+    issueInvoiceFor('DEMO-ORD-001');
     set('Approved gas price per cylinder *', '1500.00');
     submit();
     await actionCount(h.actions, 1);
