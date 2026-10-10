@@ -508,9 +508,9 @@ var require_browser = __commonJS({
 var require_has_flag = __commonJS({
   "node_modules/has-flag/index.js"(exports, module) {
     "use strict";
-    module.exports = (flag, argv = process.argv) => {
-      const prefix = flag.startsWith("-") ? "" : flag.length === 1 ? "-" : "--";
-      const position = argv.indexOf(prefix + flag);
+    module.exports = (flag2, argv = process.argv) => {
+      const prefix = flag2.startsWith("-") ? "" : flag2.length === 1 ? "-" : "--";
+      const position = argv.indexOf(prefix + flag2);
       const terminatorPosition = argv.indexOf("--");
       return position !== -1 && (terminatorPosition === -1 || position < terminatorPosition);
     };
@@ -16310,14 +16310,14 @@ var require_object_inspect = __commonJS({
         var protoTag = obj instanceof Object ? "" : "null prototype";
         var stringTag = !isPlainObject && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? "Object" : "";
         var constructorTag = isPlainObject || typeof obj.constructor !== "function" ? "" : obj.constructor.name ? obj.constructor.name + " " : "";
-        var tag = constructorTag + (stringTag || protoTag ? "[" + $join.call($concat.call([], stringTag || [], protoTag || []), ": ") + "] " : "");
+        var tag2 = constructorTag + (stringTag || protoTag ? "[" + $join.call($concat.call([], stringTag || [], protoTag || []), ": ") + "] " : "");
         if (ys.length === 0) {
-          return tag + "{}";
+          return tag2 + "{}";
         }
         if (indent) {
-          return tag + "{" + indentedJoin(ys, indent) + "}";
+          return tag2 + "{" + indentedJoin(ys, indent) + "}";
         }
-        return tag + "{ " + $join.call(ys, ", ") + " }";
+        return tag2 + "{ " + $join.call(ys, ", ") + " }";
       }
       return String(obj);
     };
@@ -19275,8 +19275,8 @@ var require_etag = __commonJS({
       if (!isStats && typeof entity !== "string" && !Buffer.isBuffer(entity)) {
         throw new TypeError("argument entity must be string, Buffer, or fs.Stats");
       }
-      var tag = isStats ? stattag(entity) : entitytag(entity);
-      return weak ? "W/" + tag : tag;
+      var tag2 = isStats ? stattag(entity) : entitytag(entity);
+      return weak ? "W/" + tag2 : tag2;
     }
     function isstats(obj) {
       if (typeof Stats === "function" && obj instanceof Stats) {
@@ -34501,18 +34501,18 @@ function movement(state, ctx, c, action, to, reference, notes = "", occurredAt =
     notes
   });
 }
-function tagUsed(state, tag) {
-  const key = tag.toLowerCase();
+function tagUsed(state, tag2) {
+  const key = tag2.toLowerCase();
   return state.cylinders.some(
     (c) => c.tag.toLowerCase() === key || c.previousTags?.some((old) => old.toLowerCase() === key)
   );
 }
-function serialUnique(state, manufacturer, serial, tag) {
+function serialUnique(state, manufacturer, serial, tag2) {
   if (state.cylinders.some(
     (c) => c.manufacturer.toLowerCase() === manufacturer.toLowerCase() && c.serial.toLowerCase() === serial.toLowerCase()
   ))
     fail("Manufacturer and serial already exist", 409);
-  if (tagUsed(state, tag)) fail("Tag already exists", 409);
+  if (tagUsed(state, tag2)) fail("Tag already exists", 409);
 }
 function createCylinder(state, ctx, p) {
   branch(state, ctx, p.branchId);
@@ -35937,6 +35937,677 @@ function demoResetState(demoMode, old, actor, seed) {
   return { state: { ...seed, revision, audit: [event, ...seed.audit] }, event };
 }
 
+// server/tally.ts
+var DEFAULT_TALLY_LEDGERS = {
+  salesGas: "Sales - Medical Oxygen",
+  salesRental: "Cylinder Rental Income",
+  cgst: "Output CGST",
+  sgst: "Output SGST",
+  igst: "Output IGST",
+  cash: "Cash",
+  bank: "Bank Account",
+  deposits: "Cylinder Security Deposits",
+  creditNotes: "Sales Returns"
+};
+var GST_STATE_NAMES = {
+  "01": "Jammu & Kashmir",
+  "02": "Himachal Pradesh",
+  "03": "Punjab",
+  "04": "Chandigarh",
+  "05": "Uttarakhand",
+  "06": "Haryana",
+  "07": "Delhi",
+  "08": "Rajasthan",
+  "09": "Uttar Pradesh",
+  "10": "Bihar",
+  "11": "Sikkim",
+  "12": "Arunachal Pradesh",
+  "13": "Nagaland",
+  "14": "Manipur",
+  "15": "Mizoram",
+  "16": "Tripura",
+  "17": "Meghalaya",
+  "18": "Assam",
+  "19": "West Bengal",
+  "20": "Jharkhand",
+  "21": "Odisha",
+  "22": "Chhattisgarh",
+  "23": "Madhya Pradesh",
+  "24": "Gujarat",
+  "25": "Dadra & Nagar Haveli and Daman & Diu",
+  "26": "Dadra & Nagar Haveli and Daman & Diu",
+  "27": "Maharashtra",
+  "28": "Andhra Pradesh",
+  "29": "Karnataka",
+  "30": "Goa",
+  "31": "Lakshadweep",
+  "32": "Kerala",
+  "33": "Tamil Nadu",
+  "34": "Puducherry",
+  "35": "Andaman & Nicobar Islands",
+  "36": "Telangana",
+  "37": "Andhra Pradesh",
+  "38": "Ladakh",
+  "97": "Other Territory"
+};
+var GSTIN_PATTERN = /^(\d{2})[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+var DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+var IST_OFFSET_MS = 330 * 60 * 1e3;
+function validGstin(raw) {
+  const gstin = (raw ?? "").trim().toUpperCase();
+  const match = GSTIN_PATTERN.exec(gstin);
+  return match && GST_STATE_NAMES[match[1]] ? gstin : void 0;
+}
+function gstinState(raw) {
+  const gstin = validGstin(raw);
+  return gstin ? GST_STATE_NAMES[gstin.slice(0, 2)] : void 0;
+}
+function stateCode(raw) {
+  const gstin = validGstin(raw);
+  if (!gstin) return void 0;
+  const code = gstin.slice(0, 2);
+  return code === "25" ? "26" : code === "28" ? "37" : code;
+}
+function isStrictDate(value) {
+  const match = DATE_PATTERN.exec(value);
+  if (!match) return false;
+  const [, y, m, d] = match.map(Number);
+  const date2 = new Date(Date.UTC(y, m - 1, d));
+  return y >= 1900 && date2.getUTCFullYear() === y && date2.getUTCMonth() === m - 1 && date2.getUTCDate() === d;
+}
+function indiaDate(at) {
+  if (DATE_PATTERN.test(at)) return isStrictDate(at) ? at : void 0;
+  const ms = Date.parse(at);
+  if (!Number.isFinite(ms)) return void 0;
+  return new Date(ms + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+function rupees(paise) {
+  if (typeof paise === "number" && !Number.isSafeInteger(paise))
+    throw new Error("Amount must be whole paise");
+  let p = BigInt(paise);
+  const negative = p < 0n;
+  if (negative) p = -p;
+  const text = `${p / 100n}.${(p % 100n).toString().padStart(2, "0")}`;
+  return negative ? `-${text}` : text;
+}
+var XML_ILLEGAL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F￾￿]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+function cleanText(value, max = 1e3) {
+  return String(value ?? "").replace(/[\t\r\n]+/g, " ").replace(XML_ILLEGAL, "").replace(/\s+/g, " ").trim().slice(0, max).trim();
+}
+function xmlEscape(value) {
+  return String(value ?? "").replace(XML_ILLEGAL, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+function resolveLedgers(input) {
+  const pick = (key) => cleanText(input?.[key], 200) || DEFAULT_TALLY_LEDGERS[key];
+  const bank = pick("bank");
+  return {
+    salesGas: pick("salesGas"),
+    salesRental: pick("salesRental"),
+    cgst: pick("cgst"),
+    sgst: pick("sgst"),
+    igst: pick("igst"),
+    cash: pick("cash"),
+    bank,
+    upi: cleanText(input?.upi, 200) || bank,
+    deposits: pick("deposits"),
+    creditNotes: pick("creditNotes")
+  };
+}
+var big = (n) => BigInt(n);
+var safeId = (id) => id.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 120);
+function buildTallyXml(state, options) {
+  if (!isStrictDate(options.from) || !isStrictDate(options.to))
+    throw new Error("From and to must be real dates in YYYY-MM-DD form");
+  if (options.from > options.to) throw new Error("From date must not be after to date");
+  const from = options.from;
+  const to = options.to;
+  const companyName = cleanText(options.companyName, 200) || cleanText(state.settings.companyName, 200);
+  const ledgers = resolveLedgers(options.ledgers);
+  const includeMasters = options.includeMasters ?? true;
+  const includeVouchers = options.includeVouchers ?? true;
+  const inRange = (at) => {
+    const d = indiaDate(at);
+    return d !== void 0 && d >= from && d <= to;
+  };
+  const skipped = [];
+  const warnings = /* @__PURE__ */ new Set();
+  const skip = (id, number, kind, reason) => skipped.push({ id, number: cleanText(number, 100), kind, reason });
+  const reserved = new Set(Object.values(ledgers).map((n2) => n2.toLowerCase()));
+  const partyById = new Map(state.parties.map((p) => [p.id, p]));
+  const partyLedger = /* @__PURE__ */ new Map();
+  const used = new Set(reserved);
+  const partyMasters = /* @__PURE__ */ new Map();
+  function ledgerFor(partyId, fallback) {
+    const existing = partyLedger.get(partyId);
+    if (existing) return existing;
+    const party = partyById.get(partyId);
+    const base = cleanText(party?.name ?? fallback?.name, 180) || `Customer ${safeId(partyId)}`;
+    let name = base;
+    if (used.has(name.toLowerCase())) name = `${base} (${safeId(partyId).slice(-8)})`;
+    for (let n2 = 2; used.has(name.toLowerCase()); n2++)
+      name = `${base} (${safeId(partyId).slice(-8)}-${n2})`;
+    used.add(name.toLowerCase());
+    partyLedger.set(partyId, name);
+    const rawGstin = party?.gstin ?? fallback?.gstin ?? "";
+    const gstin = validGstin(rawGstin);
+    if (rawGstin.trim() && !gstin)
+      warnings.add(
+        `GSTIN "${cleanText(rawGstin, 30)}" of ${name} is not a valid GSTIN; exported without GSTIN.`
+      );
+    partyMasters.set(partyId, {
+      name,
+      parent: "Sundry Debtors",
+      billWise: true,
+      party: {
+        gstin,
+        state: gstinState(gstin),
+        mailingName: cleanText(party?.name ?? fallback?.name, 180) || name,
+        address: [party?.address ?? fallback?.address, party?.city ?? fallback?.city].map((x) => cleanText(x, 200)).filter(Boolean)
+      }
+    });
+    return name;
+  }
+  for (const p of [...state.parties].filter((p2) => p2.type !== "supplier").sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)))
+    ledgerFor(p.id);
+  const invoiceById = new Map(state.invoices.map((i) => [i.id, i]));
+  const vouchers = [];
+  const counts = {
+    sales: 0,
+    creditNotes: 0,
+    receipts: 0,
+    deposits: 0,
+    depositRefunds: 0,
+    creditRefunds: 0
+  };
+  const totals = {
+    salesPaise: 0n,
+    salesTaxPaise: 0n,
+    creditNotesPaise: 0n,
+    receiptsPaise: 0n,
+    depositsPaise: 0n,
+    depositRefundsPaise: 0n,
+    creditRefundsPaise: 0n
+  };
+  function taxEntries(inv, sign) {
+    const tax2 = big(inv.taxPaise);
+    if (tax2 === 0n) return [];
+    const supplier = stateCode(inv.issuer?.gstin ?? state.settings.gstin);
+    const buyer = stateCode(inv.billTo?.gstin ?? partyById.get(inv.partyId)?.gstin);
+    if (!supplier)
+      warnings.add("Supplier GSTIN is missing or invalid; tax exported as CGST + SGST.");
+    const interState = supplier !== void 0 && buyer !== void 0 && supplier !== buyer;
+    if (interState) return [{ ledger: ledgers.igst, amount: sign * tax2 }];
+    const sgst = tax2 / 2n;
+    const cgst = tax2 - sgst;
+    return [
+      { ledger: ledgers.cgst, amount: sign * cgst },
+      { ledger: ledgers.sgst, amount: sign * sgst }
+    ].filter((e) => e.amount !== 0n);
+  }
+  function gstHeader(inv) {
+    const gstin = validGstin(inv.billTo?.gstin ?? partyById.get(inv.partyId)?.gstin);
+    return { partyGstin: gstin, state: gstinState(gstin) };
+  }
+  function moneyLedger(r) {
+    return r.method === "cash" ? ledgers.cash : r.method === "bank" ? ledgers.bank : r.method === "upi" ? ledgers.upi : void 0;
+  }
+  function amountsOk(inv) {
+    return [inv.subtotalPaise, inv.taxPaise, inv.totalPaise].every(
+      (n2) => Number.isSafeInteger(n2) && n2 >= 0
+    ) && big(inv.subtotalPaise) + big(inv.taxPaise) === big(inv.totalPaise);
+  }
+  for (const inv of state.invoices) {
+    if (!inRange(inv.issuedAt)) continue;
+    const kind = inv.type === "credit" ? "credit_note" : `${inv.type}_invoice`;
+    if (!amountsOk(inv)) {
+      skip(
+        inv.id,
+        inv.number,
+        kind,
+        "Subtotal plus tax does not equal the total; fix in Cylvero first."
+      );
+      continue;
+    }
+    if (inv.totalPaise === 0) {
+      skip(inv.id, inv.number, kind, "Zero amount; nothing to post.");
+      continue;
+    }
+    const party = ledgerFor(inv.partyId, inv.billTo);
+    const date2 = indiaDate(inv.issuedAt);
+    const number = cleanText(inv.number, 100);
+    const total = big(inv.totalPaise);
+    if (inv.type === "credit") {
+      const original = inv.creditedInvoiceId ? invoiceById.get(inv.creditedInvoiceId) : void 0;
+      const offset = big(Math.min(inv.creditOffsetPaise ?? inv.totalPaise, inv.totalPaise));
+      const bills = [];
+      if (original && offset > 0n)
+        bills.push({ name: cleanText(original.number, 100), type: "Agst Ref", amount: offset });
+      const rest = total - (original ? offset : 0n);
+      if (rest > 0n) bills.push({ name: number, type: "New Ref", amount: rest });
+      vouchers.push({
+        remoteId: `cylvero-credit-note-${safeId(inv.id)}`,
+        type: "Credit Note",
+        date: date2,
+        number,
+        partyLedger: party,
+        narration: cleanText(
+          `Credit note ${number}${original ? ` against ${original.number}` : ""}${inv.notes ? `: ${inv.notes}` : ""}`,
+          500
+        ),
+        gst: gstHeader(inv),
+        entries: [
+          { ledger: party, amount: total, isParty: true, bills },
+          { ledger: ledgers.creditNotes, amount: -big(inv.subtotalPaise) },
+          ...taxEntries(inv, -1n)
+        ].filter((e) => e.amount !== 0n),
+        sortKey: `${date2}|2|${number}|${inv.id}`
+      });
+      counts.creditNotes++;
+      totals.creditNotesPaise += total;
+      continue;
+    }
+    vouchers.push({
+      remoteId: `cylvero-invoice-${safeId(inv.id)}`,
+      type: "Sales",
+      date: date2,
+      number,
+      partyLedger: party,
+      narration: cleanText(
+        `${inv.type === "rental" ? "Cylinder rental" : "Gas"} invoice ${number}${inv.lines.length ? `: ${inv.lines.map((l) => l.description).join("; ")}` : ""}`,
+        500
+      ),
+      gst: gstHeader(inv),
+      entries: [
+        {
+          ledger: party,
+          amount: -total,
+          isParty: true,
+          bills: [{ name: number, type: "New Ref", amount: -total }]
+        },
+        {
+          ledger: inv.type === "rental" ? ledgers.salesRental : ledgers.salesGas,
+          amount: big(inv.subtotalPaise)
+        },
+        ...taxEntries(inv, 1n)
+      ].filter((e) => e.amount !== 0n),
+      sortKey: `${date2}|1|${number}|${inv.id}`
+    });
+    counts.sales++;
+    totals.salesPaise += total;
+    totals.salesTaxPaise += big(inv.taxPaise);
+  }
+  for (const r of state.receipts) {
+    if (!inRange(r.at)) continue;
+    const number = cleanText(r.number, 100);
+    if (r.kind === "credit_allocation") {
+      skip(
+        r.id,
+        r.number,
+        r.kind,
+        r.reversedAt ? "Credit allocation that was later reversed; no ledger effect." : "Credit allocation only moves customer credit between bills of the same customer; ledger balances are unchanged. Adjust bills in Tally if needed."
+      );
+      continue;
+    }
+    if (r.reversedAt) {
+      skip(r.id, r.number, r.kind, "Reversed in Cylvero; not posted.");
+      continue;
+    }
+    if (!Number.isSafeInteger(r.amountPaise) || r.amountPaise <= 0) {
+      skip(r.id, r.number, r.kind, "Amount is not a positive whole number of paise.");
+      continue;
+    }
+    const money2 = moneyLedger(r);
+    if (!money2) {
+      skip(r.id, r.number, r.kind, `Unsupported payment method "${cleanText(r.method, 20)}".`);
+      continue;
+    }
+    const amount = big(r.amountPaise);
+    const date2 = indiaDate(r.at);
+    const party = ledgerFor(r.partyId);
+    const ref = r.reference ? ` (ref ${r.reference})` : "";
+    const base = { date: date2, number, remoteId: `cylvero-receipt-${safeId(r.id)}` };
+    if (r.kind === "payment") {
+      const inv = r.invoiceId ? invoiceById.get(r.invoiceId) : void 0;
+      const bill = inv ? { name: cleanText(inv.number, 100), type: "Agst Ref", amount } : { name: number, type: "On Account", amount };
+      if (!inv) warnings.add(`Receipt ${number}: invoice not found; posted On Account.`);
+      vouchers.push({
+        ...base,
+        type: "Receipt",
+        partyLedger: party,
+        narration: cleanText(
+          `Payment ${number} for ${inv?.number ?? "account"} by ${r.method}${ref}`,
+          500
+        ),
+        entries: [
+          { ledger: party, amount, isParty: true, bills: [bill] },
+          { ledger: money2, amount: -amount }
+        ],
+        sortKey: `${date2}|3|${number}|${r.id}`
+      });
+      counts.receipts++;
+      totals.receiptsPaise += amount;
+    } else if (r.kind === "deposit") {
+      vouchers.push({
+        ...base,
+        type: "Receipt",
+        partyLedger: ledgers.deposits,
+        narration: cleanText(
+          `Cylinder security deposit ${number} from ${party} by ${r.method}${ref}`,
+          500
+        ),
+        entries: [
+          { ledger: ledgers.deposits, amount },
+          { ledger: money2, amount: -amount }
+        ],
+        sortKey: `${date2}|4|${number}|${r.id}`
+      });
+      counts.deposits++;
+      totals.depositsPaise += amount;
+    } else if (r.kind === "refund") {
+      vouchers.push({
+        ...base,
+        type: "Payment",
+        partyLedger: ledgers.deposits,
+        narration: cleanText(
+          `Security deposit refund ${number} to ${party} by ${r.method}${ref}${r.reason ? `: ${r.reason}` : ""}`,
+          500
+        ),
+        entries: [
+          { ledger: ledgers.deposits, amount: -amount },
+          { ledger: money2, amount }
+        ],
+        sortKey: `${date2}|5|${number}|${r.id}`
+      });
+      counts.depositRefunds++;
+      totals.depositRefundsPaise += amount;
+    } else if (r.kind === "credit_refund") {
+      const note = r.creditInvoiceId ? invoiceById.get(r.creditInvoiceId) : void 0;
+      const bill = note ? { name: cleanText(note.number, 100), type: "Agst Ref", amount: -amount } : { name: number, type: "On Account", amount: -amount };
+      vouchers.push({
+        ...base,
+        type: "Payment",
+        partyLedger: party,
+        narration: cleanText(
+          `Refund of customer credit ${number}${note ? ` from ${note.number}` : ""} by ${r.method}${ref}${r.reason ? `: ${r.reason}` : ""}`,
+          500
+        ),
+        entries: [
+          { ledger: party, amount: -amount, isParty: true, bills: [bill] },
+          { ledger: money2, amount }
+        ],
+        sortKey: `${date2}|6|${number}|${r.id}`
+      });
+      counts.creditRefunds++;
+      totals.creditRefundsPaise += amount;
+    } else {
+      skip(r.id, r.number, String(r.kind), "Unknown receipt kind.");
+    }
+  }
+  for (const v of vouchers) {
+    const sum2 = v.entries.reduce((n2, e) => n2 + e.amount, 0n);
+    if (sum2 !== 0n) throw new Error(`Voucher ${v.number} does not balance (${rupees(sum2)})`);
+    for (const e of v.entries)
+      if (e.bills && e.bills.reduce((n2, b) => n2 + b.amount, 0n) !== e.amount)
+        throw new Error(`Voucher ${v.number} bill allocations do not match ${e.ledger}`);
+  }
+  vouchers.sort((a, b) => a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0);
+  const supporting = [
+    { name: ledgers.salesGas, parent: "Sales Accounts" },
+    { name: ledgers.salesRental, parent: "Sales Accounts" },
+    { name: ledgers.creditNotes, parent: "Sales Accounts" },
+    { name: ledgers.cgst, parent: "Duties & Taxes", taxDutyHead: "Central Tax" },
+    { name: ledgers.sgst, parent: "Duties & Taxes", taxDutyHead: "State Tax" },
+    { name: ledgers.igst, parent: "Duties & Taxes", taxDutyHead: "Integrated Tax" },
+    { name: ledgers.cash, parent: "Cash-in-Hand" },
+    { name: ledgers.bank, parent: "Bank Accounts" },
+    { name: ledgers.upi, parent: "Bank Accounts" },
+    { name: ledgers.deposits, parent: "Current Liabilities" }
+  ];
+  const masters = [];
+  if (includeMasters) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const m of supporting) {
+      if (seen.has(m.name.toLowerCase())) continue;
+      seen.add(m.name.toLowerCase());
+      masters.push(m);
+    }
+    masters.push(...[...partyMasters.values()].sort((a, b) => a.name.localeCompare(b.name)));
+  }
+  const xml = renderEnvelope(companyName, masters, includeVouchers ? vouchers : []);
+  const n = (x) => Number(x);
+  return {
+    xml,
+    summary: {
+      companyName,
+      from,
+      to,
+      counts: {
+        ledgers: masters.length,
+        vouchers: includeVouchers ? vouchers.length : 0,
+        ...counts,
+        skipped: skipped.length
+      },
+      totals: {
+        salesPaise: n(totals.salesPaise),
+        salesTaxPaise: n(totals.salesTaxPaise),
+        creditNotesPaise: n(totals.creditNotesPaise),
+        receiptsPaise: n(totals.receiptsPaise),
+        depositsPaise: n(totals.depositsPaise),
+        depositRefundsPaise: n(totals.depositRefundsPaise),
+        creditRefundsPaise: n(totals.creditRefundsPaise)
+      },
+      skipped,
+      warnings: [...warnings]
+    }
+  };
+}
+function tag(name, value, indent) {
+  return `${indent}<${name}>${xmlEscape(value)}</${name}>`;
+}
+function renderLedger(m) {
+  const i = "     ";
+  const lines = [`    <LEDGER NAME="${xmlEscape(m.name)}" ACTION="Create">`];
+  if (m.party) {
+    lines.push(`${i}<MAILINGNAME.LIST TYPE="String">`);
+    lines.push(tag("MAILINGNAME", m.party.mailingName, `${i} `));
+    lines.push(`${i}</MAILINGNAME.LIST>`);
+    if (m.party.address.length) {
+      lines.push(`${i}<ADDRESS.LIST TYPE="String">`);
+      for (const a of m.party.address) lines.push(tag("ADDRESS", a, `${i} `));
+      lines.push(`${i}</ADDRESS.LIST>`);
+    }
+  }
+  lines.push(tag("NAME", m.name, i));
+  lines.push(tag("PARENT", m.parent, i));
+  if (m.billWise !== void 0) lines.push(tag("ISBILLWISEON", m.billWise ? "Yes" : "No", i));
+  if (m.taxDutyHead) {
+    lines.push(tag("TAXTYPE", "GST", i));
+    lines.push(tag("GSTDUTYHEAD", m.taxDutyHead, i));
+  }
+  if (m.party) {
+    lines.push(tag("COUNTRYNAME", "India", i));
+    if (m.party.state) lines.push(tag("LEDSTATENAME", m.party.state, i));
+    if (m.party.gstin) {
+      lines.push(tag("GSTREGISTRATIONTYPE", "Regular", i));
+      lines.push(tag("PARTYGSTIN", m.party.gstin, i));
+    }
+  }
+  lines.push("    </LEDGER>");
+  return lines.join("\n");
+}
+function renderVoucher(v) {
+  const i = "     ";
+  const lines = [
+    `    <VOUCHER REMOTEID="${xmlEscape(v.remoteId)}" VCHTYPE="${xmlEscape(v.type)}" ACTION="Create" OBJVIEW="Accounting Voucher View">`,
+    tag("DATE", v.date.replace(/-/g, ""), i),
+    tag("VOUCHERTYPENAME", v.type, i),
+    tag("VOUCHERNUMBER", v.number, i),
+    tag("PARTYLEDGERNAME", v.partyLedger, i)
+  ];
+  if (v.gst?.partyGstin) lines.push(tag("PARTYGSTIN", v.gst.partyGstin, i));
+  if (v.gst?.state) {
+    lines.push(tag("STATENAME", v.gst.state, i));
+    lines.push(tag("PLACEOFSUPPLY", v.gst.state, i));
+  }
+  lines.push(tag("PERSISTEDVIEW", "Accounting Voucher View", i));
+  lines.push(tag("ISINVOICE", "No", i));
+  if (v.narration) lines.push(tag("NARRATION", v.narration, i));
+  for (const e of v.entries) {
+    lines.push(`${i}<ALLLEDGERENTRIES.LIST>`);
+    lines.push(tag("LEDGERNAME", e.ledger, `${i} `));
+    lines.push(tag("ISDEEMEDPOSITIVE", e.amount < 0n ? "Yes" : "No", `${i} `));
+    lines.push(tag("ISPARTYLEDGER", e.isParty ? "Yes" : "No", `${i} `));
+    lines.push(tag("AMOUNT", rupees(e.amount), `${i} `));
+    for (const b of e.bills ?? []) {
+      lines.push(`${i} <BILLALLOCATIONS.LIST>`);
+      lines.push(tag("NAME", b.name, `${i}  `));
+      lines.push(tag("BILLTYPE", b.type, `${i}  `));
+      lines.push(tag("AMOUNT", rupees(b.amount), `${i}  `));
+      lines.push(`${i} </BILLALLOCATIONS.LIST>`);
+    }
+    lines.push(`${i}</ALLLEDGERENTRIES.LIST>`);
+  }
+  lines.push("    </VOUCHER>");
+  return lines.join("\n");
+}
+function renderEnvelope(company, masters, vouchers) {
+  const messages = [...masters.map(renderLedger), ...vouchers.map(renderVoucher)].map(
+    (body) => `   <TALLYMESSAGE xmlns:UDF="TallyUDF">
+${body}
+   </TALLYMESSAGE>`
+  );
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    "<ENVELOPE>",
+    " <HEADER>",
+    "  <TALLYREQUEST>Import Data</TALLYREQUEST>",
+    " </HEADER>",
+    " <BODY>",
+    "  <IMPORTDATA>",
+    "   <REQUESTDESC>",
+    `    <REPORTNAME>${vouchers.length ? "Vouchers" : "All Masters"}</REPORTNAME>`,
+    "    <STATICVARIABLES>",
+    `     <SVCURRENTCOMPANY>${xmlEscape(company)}</SVCURRENTCOMPANY>`,
+    "    </STATICVARIABLES>",
+    "   </REQUESTDESC>",
+    "   <REQUESTDATA>",
+    ...messages,
+    "   </REQUESTDATA>",
+    "  </IMPORTDATA>",
+    " </BODY>",
+    "</ENVELOPE>",
+    ""
+  ].join("\n");
+}
+var TALLY_EXPORT_ROLES = ["admin", "finance", "auditor"];
+var TALLY_LEDGER_KEYS = [
+  "salesGas",
+  "salesRental",
+  "cgst",
+  "sgst",
+  "igst",
+  "cash",
+  "bank",
+  "upi",
+  "deposits",
+  "creditNotes"
+];
+var NAME_MAX = 100;
+var SAFE_NAME = /^[\p{L}\p{M}\p{N}\p{Zs}\p{Pd}\p{Pc}&().,'’\/+@#:;!%*[\]]+$/u;
+var QUERY_KEYS = /* @__PURE__ */ new Set([
+  "company",
+  "from",
+  "to",
+  "masters",
+  "vouchers",
+  ...TALLY_LEDGER_KEYS
+]);
+var MAX_RANGE_DAYS = 3660;
+function safeName(label, raw) {
+  if (raw === void 0) return {};
+  if (typeof raw !== "string") return { error: `${label} must be a single value` };
+  const value = raw.trim();
+  if (!value) return {};
+  if (value.length > NAME_MAX) return { error: `${label} must be at most ${NAME_MAX} characters` };
+  if (!SAFE_NAME.test(value))
+    return { error: `${label} contains characters Tally names cannot use` };
+  return { value: value.replace(/\s+/g, " ") };
+}
+function flag(label, raw) {
+  if (raw === void 0) return {};
+  if (raw === "1" || raw === "true" || raw === "yes") return { value: true };
+  if (raw === "0" || raw === "false" || raw === "no") return { value: false };
+  return { error: `${label} must be 1 or 0` };
+}
+function parseTallyQuery(query) {
+  if (!query || typeof query !== "object" || Array.isArray(query))
+    return { ok: false, error: "Query parameters are required" };
+  const q = query;
+  for (const key of Object.keys(q))
+    if (!QUERY_KEYS.has(key))
+      return { ok: false, error: `Unknown parameter "${key.slice(0, 40)}"` };
+  const from = q.from;
+  const to = q.to;
+  if (typeof from !== "string" || !isStrictDate(from))
+    return { ok: false, error: "from must be a real date in YYYY-MM-DD form" };
+  if (typeof to !== "string" || !isStrictDate(to))
+    return { ok: false, error: "to must be a real date in YYYY-MM-DD form" };
+  if (from > to) return { ok: false, error: "from must not be after to" };
+  if ((Date.parse(to) - Date.parse(from)) / 864e5 > MAX_RANGE_DAYS)
+    return { ok: false, error: "Date range is too long; export at most ten years at a time" };
+  const company = safeName("Company name", q.company);
+  if (company.error) return { ok: false, error: company.error };
+  const ledgerNames = {};
+  for (const key of TALLY_LEDGER_KEYS) {
+    const name = safeName(`Ledger name ${key}`, q[key]);
+    if (name.error) return { ok: false, error: name.error };
+    if (name.value) ledgerNames[key] = name.value;
+  }
+  const masters = flag("masters", q.masters);
+  if (masters.error) return { ok: false, error: masters.error };
+  const vouchers = flag("vouchers", q.vouchers);
+  if (vouchers.error) return { ok: false, error: vouchers.error };
+  if (masters.value === false && vouchers.value === false)
+    return { ok: false, error: "Choose masters, vouchers or both" };
+  return {
+    ok: true,
+    options: {
+      companyName: company.value,
+      from,
+      to,
+      ledgers: ledgerNames,
+      includeMasters: masters.value ?? true,
+      includeVouchers: vouchers.value ?? true
+    }
+  };
+}
+function tallyExportResponse(scopedState2, user, query) {
+  const json = (status, error) => ({
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    body: JSON.stringify({ error })
+  });
+  if (!TALLY_EXPORT_ROLES.includes(user.role)) return json(403, "Forbidden");
+  const parsed = parseTallyQuery(query);
+  if (!parsed.ok) return json(400, parsed.error);
+  const { xml, summary } = buildTallyXml(scopedState2, parsed.options);
+  return {
+    status: 200,
+    headers: {
+      "Content-Type": "application/xml; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${tallyFileName(parsed.options.from, parsed.options.to)}"`,
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "X-Tally-Vouchers": String(summary.counts.vouchers),
+      "X-Tally-Skipped": String(summary.counts.skipped)
+    },
+    body: xml
+  };
+}
+function tallyFileName(from, to) {
+  return `cylvero-tally-${from}-${to}.xml`;
+}
+
 // server/http-app.ts
 var cookieName = "ctms_session";
 function cookieToken(req) {
@@ -36337,6 +37008,19 @@ function createHttpApp(store, options) {
         state: scopedState(full, user),
         audit: scopedAudit(audit, full, user)
       });
+    })
+  );
+  app.get(
+    "/api/export/tally",
+    requireAuth,
+    safe(async (req, res) => {
+      const user = res.locals.user;
+      const result = tallyExportResponse(
+        scopedState(await store.getState(user.orgId), user),
+        user,
+        req.query
+      );
+      res.status(result.status).set(result.headers).send(result.body);
     })
   );
   app.get(
@@ -36869,11 +37553,11 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
     notes,
     ...beforeBatch ? { before: { batchId: beforeBatch } } : {}
   });
-  const anchor = (n, tag, fields = {}) => {
+  const anchor = (n, tag2, fields = {}) => {
     const c = {
       id: `c-${String(n).padStart(3, "0")}`,
       serial: `DEMO-OX-${String(n).padStart(5, "0")}`,
-      tag,
+      tag: tag2,
       manufacturer: n % 2 ? "Demo Cylinder Works" : "Demo Alloy Works",
       gas: "Medical oxygen",
       size: "B",

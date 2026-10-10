@@ -11,6 +11,7 @@ import {
   type StoredUser,
 } from './auth.js';
 import { StoreError, hasControlChars } from './store-rules.js';
+import { tallyExportResponse } from './tally.js';
 import type { DataStore } from './data-store.js';
 import type { ActionRequest, AppState, AuditEvent, User } from '../shared/types.ts';
 
@@ -508,6 +509,20 @@ export function createHttpApp(store: DataStore, options: HttpAppOptions) {
         state: scopedState(full, user),
         audit: scopedAudit(audit, full, user),
       });
+    }),
+  );
+  // Ledgers and vouchers as TallyPrime import XML, built from the caller's scoped records.
+  app.get(
+    '/api/export/tally',
+    requireAuth,
+    safe(async (req, res) => {
+      const user = res.locals.user as StoredUser;
+      const result = tallyExportResponse(
+        scopedState(await store.getState(user.orgId), user),
+        user,
+        req.query,
+      );
+      res.status(result.status).set(result.headers).send(result.body);
     }),
   );
   app.get(

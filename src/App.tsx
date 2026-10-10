@@ -69,6 +69,7 @@ import PrintChallan from './PrintChallan';
 import DemoWalkthrough from './DemoWalkthrough';
 import LoginScreen from './LoginScreen';
 import LifeStory from './LifeStory';
+import { TallyExportDialog } from './TallyExportDialog';
 import { queueDelivery, listQueuedDeliveries, clearQueuedDeliveries } from './offline';
 import { allowedPartyTypes } from './party-options';
 import { availableCredit, creditNoteAvailable, depositBalance } from '../shared/finance';
@@ -3850,8 +3851,15 @@ function Billing({
   const outstanding = s.invoices
     .filter((i) => i.type !== 'credit' && i.status !== 'credited')
     .reduce((n, i) => n + invoiceBalance(i), 0);
+  const [tally, setTally] = useState(false);
   return (
     <>
+      {tally && (
+        <TallyExportDialog
+          onClose={() => setTally(false)}
+          defaultCompany={s.settings.companyName}
+        />
+      )}
       <PageHeader
         eyebrow="Financial records"
         title="Billing & rentals"
@@ -3860,6 +3868,11 @@ function Billing({
           <>
             <MenuButton
               items={[
+                {
+                  label: 'Export to Tally',
+                  icon: <DownloadSimple size={16} aria-hidden="true" />,
+                  onSelect: () => setTally(true),
+                },
                 canFinance && {
                   label: 'Rental invoice',
                   icon: <Plus size={16} aria-hidden="true" />,
