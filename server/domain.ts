@@ -132,6 +132,14 @@ const schemas: Record<string, z.ZodTypeAny> = {
       ownerAuthorizationRef: txt(200).optional(),
     })
     .strict(),
+  'cylinder.recover': z
+    .object({
+      cylinderId: txt(100),
+      version: z.number().int().nonnegative(),
+      branchId: txt(100),
+      reason: txt(500),
+    })
+    .strict(),
   'party.create': partyFields,
   'party.update': z
     .object({
@@ -343,6 +351,7 @@ const access: Record<string, Role[]> = {
   'cylinder.offsiteIncident': ['admin', 'operations'],
   'rental.stopIncident': ['admin'],
   'cylinder.writeoff': ['admin'],
+  'cylinder.recover': ['admin'],
   'party.create': ['admin', 'operations', 'finance'],
   'party.update': ['admin', 'finance'],
   'order.create': ['admin', 'operations'],
@@ -421,7 +430,7 @@ function customerCreditHeld(state: AppState, partyId: string): bigint {
     .reduce((n, i) => n + BigInt(creditNoteAvailable(state, i.id)), 0n);
 }
 // Retirement is permanent: a writeoff mark keeps a cylinder retired even if its condition was
-// later changed by older code. Recovery needs a separate, explicitly authorized policy.
+// later changed by older code. The only way back is cylinder.recover (admin, lost write-offs).
 const isRetired = (c: Cylinder) => c.condition === 'retired' || !!c.writtenOffAt;
 function notRetired(c: Cylinder) {
   if (isRetired(c)) fail(`Cylinder ${c.serial} is retired or written off and cannot be used`);
@@ -910,6 +919,33 @@ export function applyAction(
       }
       entityId = c.id;
       message = 'Lost cylinder written off';
+      break;
+    }
+    case 'cylinder.recover': {
+      // A written-off lost cylinder that turns up again. It comes back on hold, with unknown
+      // contents and no batch, so it must pass a normal safety check before any use.
+      const c = object(s.cylinders, p.cylinderId, 'Cylinder', ctx, s);
+      if (c.version !== p.version) fail('Cylinder version changed', 409);
+      if (!c.writtenOffAt || c.offsiteIncident?.kind !== 'lost')
+        fail('Only a cylinder written off as lost can be received back');
+      branch(s, ctx, p.branchId);
+      if (c.ownerId !== 'company' && p.branchId !== c.branchId)
+        fail('Third-party-owned cylinder must return to its owning branch');
+      const pickup =
+        c.custody === 'vehicle' ? s.pickups?.find((x) => x.id === c.custodianId) : undefined;
+      if (pickup && pickup.cylinderIds.includes(c.id) && !pickup.receivedIds.includes(c.id))
+        pickup.receivedIds.push(c.id);
+      movement(s, ctx, c, 'recovery', `plant:${p.branchId}`, c.id, p.reason);
+      c.custody = 'plant';
+      c.custodianId = p.branchId;
+      c.branchId = p.branchId;
+      c.condition = 'quarantine';
+      c.contents = 'unknown';
+      c.batchId = undefined;
+      c.writtenOffAt = undefined;
+      c.offsiteIncident = undefined;
+      entityId = c.id;
+      message = 'Cylinder received back on hold for a safety check';
       break;
     }
     case 'party.create': {

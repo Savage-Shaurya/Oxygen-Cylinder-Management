@@ -657,6 +657,33 @@ export default function App() {
       },
     });
   }
+  function recoverCylinder(c: Cylinder) {
+    open({
+      title: `Receive back · ${c.tag}`,
+      warning:
+        'For a cylinder written off as lost that has been found. It comes back to the godown on hold, with unknown contents, and must pass a safety check before use. The write-off stays in its history.',
+      submitLabel: 'Receive back on hold',
+      fields: [
+        {
+          name: 'branchId',
+          label: 'Receiving godown',
+          type: 'select',
+          required: true,
+          options: branchOptions,
+          value: c.branchId,
+        },
+        { name: 'reason', label: 'Where and how it was found', type: 'textarea', required: true },
+      ],
+      submit: async (v) => {
+        await run('cylinder.recover', {
+          cylinderId: c.id,
+          version: c.version,
+          branchId: v.branchId,
+          reason: text(v.reason),
+        });
+      },
+    });
+  }
   function reverseCollection() {
     const pickups = (s.pickups || []).filter((p) =>
       p.cylinderIds.some(
@@ -2609,6 +2636,7 @@ export default function App() {
             offsiteIncident,
             stopIncidentRent,
             writeOff,
+            recoverCylinder,
             rejectBatchCylinder,
             retag,
             dispatch,
@@ -4760,6 +4788,7 @@ function Detail({
     offsiteIncident: (c: Cylinder) => void;
     stopIncidentRent: (c: Cylinder) => void;
     writeOff: (c: Cylinder) => void;
+    recoverCylinder: (c: Cylinder) => void;
     rejectBatchCylinder: (b: Batch) => void;
     retag: (c: Cylinder) => void;
     dispatch: (o: Order) => void;
@@ -4895,6 +4924,13 @@ function Detail({
                     Write off lost cylinder
                   </Button>
                 )}
+              </div>
+            )}
+            {currentUser.role === 'admin' && c.writtenOffAt && (
+              <div className="detail-actions">
+                <Button variant="secondary" onClick={() => actions.recoverCylinder(c)}>
+                  Receive back (found again)
+                </Button>
               </div>
             )}
             <div className="detail-section">

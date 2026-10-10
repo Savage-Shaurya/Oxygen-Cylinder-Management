@@ -34219,6 +34219,12 @@ var schemas = {
     reason: txt(500),
     ownerAuthorizationRef: txt(200).optional()
   }).strict(),
+  "cylinder.recover": external_exports.object({
+    cylinderId: txt(100),
+    version: external_exports.number().int().nonnegative(),
+    branchId: txt(100),
+    reason: txt(500)
+  }).strict(),
   "party.create": partyFields,
   "party.update": external_exports.object({
     partyId: txt(100),
@@ -34383,6 +34389,7 @@ var access = {
   "cylinder.offsiteIncident": ["admin", "operations"],
   "rental.stopIncident": ["admin"],
   "cylinder.writeoff": ["admin"],
+  "cylinder.recover": ["admin"],
   "party.create": ["admin", "operations", "finance"],
   "party.update": ["admin", "finance"],
   "order.create": ["admin", "operations"],
@@ -34809,6 +34816,30 @@ function applyAction(input, request, ctx) {
       }
       entityId = c.id;
       message = "Lost cylinder written off";
+      break;
+    }
+    case "cylinder.recover": {
+      const c = object(s.cylinders, p.cylinderId, "Cylinder", ctx, s);
+      if (c.version !== p.version) fail("Cylinder version changed", 409);
+      if (!c.writtenOffAt || c.offsiteIncident?.kind !== "lost")
+        fail("Only a cylinder written off as lost can be received back");
+      branch(s, ctx, p.branchId);
+      if (c.ownerId !== "company" && p.branchId !== c.branchId)
+        fail("Third-party-owned cylinder must return to its owning branch");
+      const pickup = c.custody === "vehicle" ? s.pickups?.find((x) => x.id === c.custodianId) : void 0;
+      if (pickup && pickup.cylinderIds.includes(c.id) && !pickup.receivedIds.includes(c.id))
+        pickup.receivedIds.push(c.id);
+      movement(s, ctx, c, "recovery", `plant:${p.branchId}`, c.id, p.reason);
+      c.custody = "plant";
+      c.custodianId = p.branchId;
+      c.branchId = p.branchId;
+      c.condition = "quarantine";
+      c.contents = "unknown";
+      c.batchId = void 0;
+      c.writtenOffAt = void 0;
+      c.offsiteIncident = void 0;
+      entityId = c.id;
+      message = "Cylinder received back on hold for a safety check";
       break;
     }
     case "party.create": {

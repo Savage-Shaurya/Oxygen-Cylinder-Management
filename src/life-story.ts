@@ -147,6 +147,12 @@ function describe(
       return { stage: 'problem', title: 'Reported damaged', detail: `Damaged while with ${from}.` };
     case 'rental_stop_incident':
       return { stage: 'problem', title: 'Rent stopped', detail: 'Rent stopped after an incident.' };
+    case 'recovery':
+      return {
+        stage: 'back',
+        title: 'Found and received back',
+        detail: `Received at ${to} on hold, waiting for a safety check.`,
+      };
     case 'writeoff':
       return { stage: 'retired', title: 'Written off', detail: 'Removed from the fleet.' };
     default:
