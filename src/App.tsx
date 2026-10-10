@@ -1265,7 +1265,8 @@ export default function App() {
           label: 'Collecting driver',
           type: 'select',
           required: true,
-          options: driverOptions,
+          // Drivers are not sent the staff list, and may only collect for themselves.
+          options: u.role === 'driver' ? [{ value: u.id, label: u.name }] : driverOptions,
           value: u.role === 'driver' ? u.id : undefined,
         },
         { name: 'notes', label: 'Pickup notes', type: 'textarea' },
