@@ -26,35 +26,23 @@ Demo password: `OxygenDemo!2026`.
 | driver@batra.demo | Assigned deliveries and return collection |
 | auditor@batra.demo | Read-only review and export |
 
-## Simple mode (for drivers and godown staff)
+## Tally
 
-Drivers, and operations staff by default, open a **picture-based Simple mode** instead of the office screens. It shows 4 big picture tiles, has no menus or tables, and works in Hindi or English with spoken help. Operations, quality and admin users can switch between modes with **Office mode** / **Simple mode**.
+**Billing & rentals → More → Export to Tally** downloads a TallyPrime import file for a date range: customer ledgers (Sundry Debtors with GSTIN and state), Sales vouchers for gas and rental invoices with CGST + SGST or IGST, Receipts against bills, security deposits and refunds, credit notes and credit refunds. Every voucher balances. Ledger names are editable to match the Tally company. In TallyPrime: **Gateway of Tally → Import → Masters**, then **Transactions**. Turn on overwrite for duplicates to re-import safely. Available to admin, finance and auditor (`GET /api/export/tally`). Automatic sync through a connector on the Tally computer is the next step.
 
-| Role | Tiles |
-|---|---|
-| Driver | Give · Take back · My truck · Scan · Problem |
-| Operations | Came back · Load truck · Scan · Filled · Problem |
-| Quality | Scan · Check |
+## Archived: Simple mode and voice
 
-- **Scanning:** the camera stays open while you scan, and each cylinder fills a dot. No camera, or testing on a laptop? Use **Type code** or **Pick from list**.
-- **Undo:** every save waits **5 seconds with a big UNDO** before anything is sent. Undo means nothing was recorded.
-- **Results:** a green tick or red cross, with a sound, a vibration and a spoken sentence. Errors are shown as four plain-language screens, and the technical text is under **Details**.
-- **Offline:** deliveries made with no network are saved on the phone. A ☁ button sends them later.
-- **Voice: Sarvam AI only.** There is no robotic phone voice anywhere. Fixed sentences play recordings made with Sarvam Bulbul v3 (voice `priya`), stored in `public/voice/`; they also work offline. Sentences with names or numbers are spoken live through the app's own `/api/voice` endpoint, which calls Sarvam with a server-side key. Only signed-in users can use it, it is rate limited, and repeated sentences are cached. With no network, those live sentences stay silent, while the pictures and text still show. Live sentences send customer and recipient names to Sarvam. Set `SARVAM_API_KEY` in Vercel. Locally, the git-ignored `keys.txt` is used. After changing wording, run `npm run voice:clips` to re-record only the phrases that changed.
-- **Sign-in:** in demo mode, tap a picture (Driver, Godown, Quality, Admin, Finance, Auditor). In a live workspace, the phone remembers the last email, so workers type only their password, and they can show the password while typing it.
-- **Server rules are unchanged:** every save goes through the same command path as Office mode, so permissions, CSRF, retry keys and the audit log behave exactly as before.
-
-The design and the reasons for each choice are in [docs/simplification-plan.md](docs/simplification-plan.md).
+The picture-based Simple mode, Hindi/English text and Sarvam voice were rolled back on 11 October 2026 and kept in `archive/simple-mode/` and on the branch `archive/simple-mode-voice`. See `archive/simple-mode/README.md` to bring them back.
 
 ## QR codes: download, print, upload
 
 - **New cylinder:** after **Register cylinder**, its page opens straight away with **Download QR** (a PNG with the QR, tag, serial, gas and size, ready to print or share on WhatsApp) and **Print label**.
 - **Many cylinders:** after a CSV import, use **Cylinders → More → Print QR labels**. It prints a sheet of labels for the list on screen, and the print dialog can save it as a PDF.
-- **No camera, or the camera can't read the label?** Every scan screen has a photo option: **Upload a QR image** in Office mode, and **Photo / QR की फ़ोटो चुनें** in Simple mode. Pick a photo or screenshot from the gallery and it's read automatically, like "scan from gallery" in payment apps. Uploading a cylinder's QR opens its page, and office roles can open its **Life story** from there.
+- **No camera, or the camera can't read the label?** Every scan box has an **Upload a QR image** button. Pick a photo or screenshot from the gallery and it's read automatically, like "scan from gallery" in payment apps. Uploading a cylinder's QR opens its page, and office roles can open its **Life story** from there.
 
 ## See a cylinder's whole life
 
-Sign in as **Admin**, open **Cylinders**, tap **Details** on any cylinder, then tap **Life story**. It shows every recorded step from joining the fleet until today, in plain words: safety checks, filling, quality release, the truck, driver and customer, who received it, collection and return. It also shows totals such as deliveries, customers served and times filled. In Simple mode, office roles can scan a cylinder and tap **Life story**.
+Sign in as **Admin**, open **Cylinders**, tap **Details** on any cylinder, then tap **Life story**. It shows every recorded step from joining the fleet until today, in plain words: safety checks, filling, quality release, the truck, driver and customer, who received it, collection and return. It also shows totals such as deliveries, customers served and times filled.
 
 To see a complete example on the demo, run `npm run demo:lifecycle` while the app is running. It takes one new cylinder through the full loop using real commands, each signed in as the right role, then prints its tag.
 
@@ -81,7 +69,7 @@ Stop an existing preview before starting another on the same ports.
 - Role/branch authorization, hashed passwords and sessions, CSRF protection, session revocation, login throttling, atomic writes, revision conflicts, retry-safe command identity and append-only audit records.
 - Search, QR labels, handheld/camera scan input, print challans and exports. Driver delivery evidence can be queued in the current loaded browser and reconciled explicitly after connectivity returns.
 
-The web interface is responsive and uses Indian currency/date formatting. Office mode is in English. Simple mode is in Hindi and English, and its Hindi text should be reviewed by a native speaker before go-live. Offline evidence capture does not provide a cold-start offline application or bypass changed safety rules. Camera, physical scanners and printers require validation on the client's actual devices.
+The web interface is responsive and uses Indian currency/date formatting. The interface is in English. Offline evidence capture does not provide a cold-start offline application or bypass changed safety rules. Camera, physical scanners and printers require validation on the client's actual devices.
 
 ## Verify
 
