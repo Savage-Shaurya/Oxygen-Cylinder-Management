@@ -11,7 +11,7 @@ import {
   Warehouse,
 } from '@phosphor-icons/react';
 import type { Role } from '../shared/types';
-import { readSetting, writeSetting } from './basic/storage';
+import { readSetting, writeSetting } from './storage';
 import { Button } from './components/UI';
 
 const DEMO_PASSWORD = 'OxygenDemo!2026';

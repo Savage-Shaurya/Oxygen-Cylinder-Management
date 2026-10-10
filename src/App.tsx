@@ -69,19 +69,11 @@ import PrintChallan from './PrintChallan';
 import DemoWalkthrough from './DemoWalkthrough';
 import LoginScreen from './LoginScreen';
 import LifeStory from './LifeStory';
-import { stopSpeaking } from './basic/feedback';
 import { queueDelivery, listQueuedDeliveries, clearQueuedDeliveries } from './offline';
 import { allowedPartyTypes } from './party-options';
 import { availableCredit, creditNoteAvailable, depositBalance } from '../shared/finance';
 import { downloadCylinderImportTemplate, CYLINDER_IMPORT_COLUMNS } from './import-template';
 import { decimalHundredths, invoiceBalance, unbilledOrder, rentalPeriod } from './finance-view';
-import BasicApp, {
-  canSwitchMode,
-  modeFor,
-  storeMode,
-  storedMode,
-  type AppMode,
-} from './basic/BasicApp';
 
 type View =
   | 'overview'
@@ -358,8 +350,6 @@ export default function App() {
   const [toast, setToast] = useState('');
   // A cylinder whose full life story is open.
   const [story, setStory] = useState<string | null>(null);
-  // Basic (picture) or Office mode, chosen per user on this phone.
-  const [modeChoice, setModeChoice] = useState<Record<string, AppMode>>({});
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   useEffect(() => {
@@ -441,7 +431,6 @@ export default function App() {
     setToast('');
     setSearch('');
     setFilter('all');
-    stopSpeaking();
     location.hash = 'overview';
   }
   /**
@@ -476,7 +465,7 @@ export default function App() {
     setMenu(false);
     setDetail(null);
   }
-  // `quiet` is for Basic mode, which shows its own result and must not change the office page.
+  // `quiet` saves without a toast or page change (for callers that show their own result).
   async function run(type: string, payload: Record<string, unknown>, quiet = false) {
     const current = latestSession.current;
     if (!current) throw new Error('Session expired. Sign in again.');
@@ -553,27 +542,6 @@ export default function App() {
       </div>
     );
   if (!session) return <LoginScreen mode={serverMode} onSubmit={submitLogin} error={loginError} />;
-  const switchMode = (next: AppMode) => {
-    storeMode(session.user.id, next);
-    setModeChoice((current) => ({ ...current, [session.user.id]: next }));
-    setToast('');
-    setForm(null);
-    setDetail(null);
-    setMenu(false);
-  };
-  if (
-    modeFor(session.user.role, modeChoice[session.user.id] ?? storedMode(session.user.id)) ===
-    'basic'
-  )
-    return (
-      <BasicApp
-        session={session}
-        run={(type, payload) => run(type, payload, true)}
-        refresh={reloadSession}
-        signOut={signout}
-        toOffice={canSwitchMode(session.user.role) ? () => switchMode('office') : undefined}
-      />
-    );
   const s = session.state,
     u = session.user,
     users = session.users,
@@ -2609,16 +2577,6 @@ export default function App() {
           <div className="topbar-right">
             {s.settings.mode === 'demo' && (
               <DemoWalkthrough state={s} user={u} onNavigate={navigate} />
-            )}
-            {canSwitchMode(u.role) && (
-              <button
-                className="btn button simple-mode"
-                onClick={() => switchMode('basic')}
-                title="Big pictures for scanning and delivery"
-              >
-                <HandTap size={16} weight="duotone" aria-hidden="true" />
-                <span>Simple mode</span>
-              </button>
             )}
             <div className="top-avatar">{u.name[0]}</div>
           </div>

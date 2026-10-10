@@ -24,8 +24,6 @@ async function build(): Promise<Express> {
     production: true,
     trustProxy: 1,
     serveDist: false,
-    // Set SARVAM_API_KEY in Vercel; without it, live sentences stay silent (clips still play).
-    voice: { apiKey: process.env.SARVAM_API_KEY?.trim() || undefined },
   });
 }
 

@@ -95,7 +95,7 @@ const SECRET_OR_JUNK = [
   'Plan.md',
   'Findings.md',
   'docs/design.md',
-  'scripts/voice-clips.ts',
+  'scripts/system-map.mjs',
   'api/index.mjs',
   '.claude/settings.json',
   'CLAUDE.local.md',
@@ -110,7 +110,7 @@ const NEEDED = [
   'shared/types.ts',
   'server/index.ts',
   'public/favicon.svg',
-  'public/voice/manifest.json',
+  'public/manifest.webmanifest',
 ];
 
 test('the matcher follows Docker rules for root-only, any-depth and exception patterns', () => {

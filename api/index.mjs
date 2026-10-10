@@ -35906,114 +35906,6 @@ function demoResetState(demoMode, old, actor, seed) {
   return { state: { ...seed, revision, audit: [event, ...seed.audit] }, event };
 }
 
-// shared/voice.ts
-var VOICE = {
-  model: "bulbul:v3",
-  speaker: "priya",
-  pace: 0.95,
-  sampleRate: 22050,
-  codec: "mp3"
-};
-var VOICE_LANGUAGES = { hi: "hi-IN", en: "en-IN" };
-var VOICE_MAX_TEXT = 300;
-
-// server/voice.ts
-var VOICE_PROVIDER_TIMEOUT_MS = 8e3;
-function createVoice(options) {
-  const call = options.fetch ?? fetch;
-  const perMinute = options.perMinute ?? 40;
-  const globalPerMinute = options.globalPerMinute ?? 120;
-  const timeoutMs = options.timeoutMs ?? VOICE_PROVIDER_TIMEOUT_MS;
-  const cacheSize = options.cacheSize ?? 300;
-  const cache = /* @__PURE__ */ new Map();
-  const usage = /* @__PURE__ */ new Map();
-  let shared = [];
-  function check(text, language) {
-    if (typeof language !== "string" || !Object.hasOwn(VOICE_LANGUAGES, language))
-      throw new StoreError("Unsupported voice language", 400);
-    if (typeof text !== "string") throw new StoreError("Text required", 400);
-    const clean = text.replace(/\s+/g, " ").trim();
-    if (!clean || clean.length > VOICE_MAX_TEXT || hasControlChars(clean))
-      throw new StoreError("Text cannot be spoken", 400);
-    return { text: clean, language };
-  }
-  function allow(userId, now = Date.now()) {
-    const recent = (usage.get(userId) ?? []).filter((at) => now - at < 6e4);
-    shared = shared.filter((at) => now - at < 6e4);
-    if (recent.length >= perMinute || shared.length >= globalPerMinute)
-      throw new StoreError("Too many voice requests", 429);
-    recent.push(now);
-    shared.push(now);
-    usage.set(userId, recent);
-    if (usage.size > 1e4) usage.delete(usage.keys().next().value);
-  }
-  async function request(text, language) {
-    if (!options.apiKey) throw new StoreError("Voice is not configured", 503);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      let response;
-      try {
-        response = await call("https://api.sarvam.ai/text-to-speech", {
-          method: "POST",
-          signal: controller.signal,
-          headers: { "api-subscription-key": options.apiKey, "content-type": "application/json" },
-          body: JSON.stringify({
-            text,
-            language_code: VOICE_LANGUAGES[language],
-            model: VOICE.model,
-            speaker: VOICE.speaker,
-            pace: VOICE.pace,
-            speech_sample_rate: VOICE.sampleRate,
-            output_audio_codec: VOICE.codec
-          })
-        });
-      } catch {
-        if (controller.signal.aborted) {
-          console.error("Sarvam voice timed out");
-          throw new StoreError("Voice unavailable", 504);
-        }
-        console.error("Sarvam voice request failed");
-        throw new StoreError("Voice unavailable", 502);
-      }
-      if (!response.ok) {
-        console.error("Sarvam voice failed with status", response.status);
-        await response.body?.cancel().catch(() => void 0);
-        throw new StoreError("Voice unavailable", 502);
-      }
-      let data;
-      try {
-        data = await response.json();
-      } catch {
-        throw new StoreError("Voice unavailable", controller.signal.aborted ? 504 : 502);
-      }
-      if (!data.audios?.length) throw new StoreError("Voice unavailable", 502);
-      return Buffer.from(data.audios.join(""), "base64");
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  return {
-    configured: () => !!options.apiKey,
-    async speak(userId, rawText, rawLanguage) {
-      const { text, language } = check(rawText, rawLanguage);
-      const key = `${language}|${text}`;
-      const cached = cache.get(key);
-      if (cached) {
-        cache.delete(key);
-        cache.set(key, cached);
-        return cached;
-      }
-      allow(userId);
-      const pending = request(text, language);
-      cache.set(key, pending);
-      pending.catch(() => cache.delete(key));
-      while (cache.size > cacheSize) cache.delete(cache.keys().next().value);
-      return pending;
-    }
-  };
-}
-
 // server/http-app.ts
 var cookieName = "ctms_session";
 function cookieToken(req) {
@@ -36540,18 +36432,6 @@ function createHttpApp(store, options) {
       if (user.role !== "admin") throw new StoreError("Forbidden", 403);
       const { revision } = await store.resetDemo(user.orgId, user);
       res.json({ ok: true, revision });
-    })
-  );
-  const voice = createVoice(options.voice ?? {});
-  app.post(
-    "/api/voice",
-    originGuard,
-    requireAuth,
-    csrf,
-    safe(async (req, res) => {
-      const user = res.locals.user;
-      const audio = await voice.speak(user.id, req.body?.text, req.body?.language);
-      res.type("audio/mpeg").send(audio);
     })
   );
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
@@ -38036,9 +37916,7 @@ async function build() {
   return createHttpApp(store, {
     production: true,
     trustProxy: 1,
-    serveDist: false,
-    // Set SARVAM_API_KEY in Vercel; without it, live sentences stay silent (clips still play).
-    voice: { apiKey: process.env.SARVAM_API_KEY?.trim() || void 0 }
+    serveDist: false
   });
 }
 function restoreApiPath(rawUrl) {

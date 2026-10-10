@@ -1,5 +1,5 @@
-// Demo-blocker regressions for the server: database TLS policy (LS-02), voice bounds
-// (LS-08 / LS-10), health versus readiness, and field-level redaction (LS-07).
+// Demo-blocker regressions for the server: database TLS policy (LS-02)
+// health versus readiness, and field-level redaction (LS-07).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
@@ -8,7 +8,6 @@ import { pgPoolConfig } from '../server/pg-store.js';
 import { Store } from '../server/store.js';
 import { sqliteDataStore, type DataStore } from '../server/data-store.js';
 import { createHttpApp } from '../server/http-app.js';
-import { createVoice, VOICE_PROVIDER_TIMEOUT_MS } from '../server/voice.js';
 import type { AppState } from '../shared/types.ts';
 
 const CA = '-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----';
@@ -80,109 +79,6 @@ test('a configured TLS opt-out never turns into an unverified remote connection'
     pgPoolConfig({ connectionString: remote, demoMode: true, caCert: CA }),
   ])
     assert.notEqual((config.ssl as { rejectUnauthorized?: boolean }).rejectUnauthorized, false);
-});
-
-// ---------- LS-10 / LS-08: voice validation, timeout, logging and budget ----------
-
-function fakeProvider() {
-  const calls: Array<{ body: Record<string, unknown>; signal?: AbortSignal | null }> = [];
-  const fetch = (async (_url: string, init?: RequestInit) => {
-    calls.push({ body: JSON.parse(String(init?.body)), signal: init?.signal });
-    return Response.json({ audios: [Buffer.from('ID3').toString('base64')] });
-  }) as typeof globalThis.fetch;
-  return { calls, fetch };
-}
-
-test('voice language must be an own supported code; inherited names are refused', async () => {
-  const p = fakeProvider();
-  const voice = createVoice({ apiKey: 'k', fetch: p.fetch });
-  for (const language of [
-    'toString',
-    'constructor',
-    '__proto__',
-    'hasOwnProperty',
-    'valueOf',
-    '',
-    'fr',
-    ['en'],
-    5,
-    null,
-    undefined,
-  ]) {
-    await assert.rejects(
-      voice.speak('u-1', 'Hello there.', language),
-      (error: { status?: number }) => error.status === 400,
-      String(language),
-    );
-  }
-  assert.equal(p.calls.length, 0, 'no provider request for invalid languages');
-  await voice.speak('u-1', 'Hello there.', 'en');
-  await voice.speak('u-1', 'Namaste.', 'hi');
-  assert.deepEqual(
-    p.calls.map((c) => c.body.language_code),
-    ['en-IN', 'hi-IN'],
-  );
-});
-
-test('voice provider wait is bounded and aborted (about 8 seconds by default)', async () => {
-  assert.ok(VOICE_PROVIDER_TIMEOUT_MS >= 5_000 && VOICE_PROVIDER_TIMEOUT_MS <= 10_000);
-  let seen: AbortSignal | undefined;
-  const hanging = ((_url: string, init?: RequestInit) =>
-    new Promise((_resolve, reject) => {
-      seen = init?.signal ?? undefined;
-      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
-    })) as typeof fetch;
-  const voice = createVoice({ apiKey: 'k', fetch: hanging, timeoutMs: 40 });
-  const started = Date.now();
-  await assert.rejects(
-    voice.speak('u-1', 'Slow sentence.', 'en'),
-    (error: { status?: number }) => error.status === 504,
-  );
-  assert.ok(Date.now() - started < 2_000);
-  assert.equal(seen?.aborted, true, 'the provider request is cancelled');
-  // A failed attempt is not cached: a later call reaches the provider again.
-  const p = fakeProvider();
-  const retry = createVoice({ apiKey: 'k', fetch: p.fetch, timeoutMs: 40 });
-  await retry.speak('u-1', 'Slow sentence.', 'en');
-  assert.ok(p.calls[0].signal, 'normal requests also carry an abort signal');
-});
-
-test('voice provider errors are logged by status only, never by body', async () => {
-  const secretBody = 'account acct-9f8e7d plan=enterprise key sk_live_secret';
-  const failing = (async () =>
-    new Response(secretBody, { status: 401, statusText: 'Unauthorized' })) as typeof fetch;
-  const logged: string[] = [];
-  const original = console.error;
-  console.error = (...args: unknown[]) => logged.push(args.map(String).join(' '));
-  try {
-    const voice = createVoice({ apiKey: 'k', fetch: failing });
-    await assert.rejects(
-      voice.speak('u-1', 'Hello.', 'en'),
-      (error: { status?: number; message?: string }) =>
-        error.status === 502 && !String(error.message).includes('acct'),
-    );
-  } finally {
-    console.error = original;
-  }
-  const output = logged.join('\n');
-  assert.match(output, /401/);
-  assert.equal(output.includes('acct-9f8e7d'), false);
-  assert.equal(output.includes('sk_live_secret'), false);
-  assert.equal(output.includes('enterprise'), false);
-});
-
-test('voice budget caps total provider calls per minute across all users', async () => {
-  const p = fakeProvider();
-  const voice = createVoice({ apiKey: 'k', fetch: p.fetch, perMinute: 10, globalPerMinute: 3 });
-  for (const user of ['u-1', 'u-2', 'u-3']) await voice.speak(user, `Hello ${user}.`, 'en');
-  await assert.rejects(
-    voice.speak('u-4', 'Hello u-4.', 'en'),
-    (error: { status?: number }) => error.status === 429,
-  );
-  assert.equal(p.calls.length, 3);
-  // Cached sentences cost nothing and stay available.
-  await voice.speak('u-4', 'Hello u-1.', 'en');
-  assert.equal(p.calls.length, 3);
 });
 
 // ---------- Health and readiness ----------

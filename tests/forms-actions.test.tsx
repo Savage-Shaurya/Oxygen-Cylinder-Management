@@ -501,9 +501,7 @@ test('finance has no Return action and switching customer refreshes eligible ret
 
   const operations = setup('operations');
   try {
-    render(React.createElement(App));
-    // Operations opens in the picture-based Basic mode; customer work lives in Office mode.
-    fireEvent.click(await screen.findByRole('button', { name: 'Office mode' }));
+    render(React.createElement(App));
     await screen.findByRole('button', { name: 'Customers' });
     openButton('Customers');
     const customer = await screen.findByRole('button', { name: 'Demo North Care Hospital' });
@@ -576,17 +574,7 @@ test('only roles that receive audit records see the Audit trail tab', async () =
 
   const operations = setup('operations');
   try {
-    render(React.createElement(App));
-    // Operations opens in Basic mode unless an earlier test already chose Office mode for
-    // this test user, which is remembered on the device.
-    await waitFor(() =>
-      assert.ok(
-        screen.queryByRole('button', { name: 'Office mode' }) ||
-          screen.queryByRole('button', { name: 'Customers' }),
-      ),
-    );
-    const toOffice = screen.queryByRole('button', { name: 'Office mode' });
-    if (toOffice) fireEvent.click(toOffice);
+    render(React.createElement(App));
     await screen.findByRole('button', { name: 'Customers' });
     openButton('Reports & audit');
     assert.ok(screen.getByRole('tab', { name: 'Stock position' }));
