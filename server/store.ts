@@ -9,13 +9,17 @@ import {
   SESSION_IDLE_MS,
   SESSION_TTL_MS,
   StoreError,
+  assertCredentialCurrent,
   assertValidPassword,
   buildNewUser,
   checkModeCompatibility,
   checkRequestEnvelope,
   checkResetPassword,
   checkResetTarget,
+  currentActor,
+  demoResetState,
   demoRoles,
+  domainUser,
   idempotencyResult,
   managementEvent,
   passwordEvent,
@@ -148,7 +152,7 @@ export class Store {
   getUserByEmail(email: string): StoredUser | undefined {
     const row = this.db.prepare('SELECT * FROM users WHERE email=?').get(email.toLowerCase()) as
       Record<string, unknown> | undefined;
-    return row && this.rowUser(row);
+    return row && { ...this.rowUser(row), authEpoch: this.authEpoch(String(row.id)) };
   }
   getUser(id: string): StoredUser | undefined {
     const row = this.db.prepare('SELECT * FROM users WHERE id=?').get(id) as
@@ -175,16 +179,20 @@ export class Store {
       >[]
     ).map((r) => this.rowUser(r));
   }
-  createSession(user: User, token: string, csrf: string) {
-    const now = Date.now();
-    this.db
-      .prepare('DELETE FROM sessions WHERE expires_at<=? OR last_seen_at<=?')
-      .run(now, now - SESSION_IDLE_MS);
-    this.db
-      .prepare(
-        'INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at,last_seen_at) VALUES (?,?,?,?,?)',
-      )
-      .run(tokenHash(token), user.id, csrf, now + SESSION_TTL_MS, now);
+  /** Issues a session only while the verified credential is still current (LS-06). */
+  createSession(user: StoredUser, token: string, csrf: string) {
+    this.transaction(() => {
+      assertCredentialCurrent(user, this.getUser(user.id), this.authEpoch(user.id));
+      const now = Date.now();
+      this.db
+        .prepare('DELETE FROM sessions WHERE expires_at<=? OR last_seen_at<=?')
+        .run(now, now - SESSION_IDLE_MS);
+      this.db
+        .prepare(
+          'INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at,last_seen_at) VALUES (?,?,?,?,?)',
+        )
+        .run(tokenHash(token), user.id, csrf, now + SESSION_TTL_MS, now);
+    });
   }
   session(token: string): { user: StoredUser; csrfToken: string } | undefined {
     const now = Date.now();
@@ -196,10 +204,11 @@ export class Store {
       .get(hashed, now, now - SESSION_IDLE_MS) as
       { user_id: string; csrf_token: string } | undefined;
     if (!row) return;
-    const user = this.getUser(row.user_id);
-    if (user?.active)
-      this.db.prepare('UPDATE sessions SET last_seen_at=? WHERE token_hash=?').run(now, hashed);
-    return user?.active ? { user, csrfToken: row.csrf_token } : undefined;
+    const found = this.getUser(row.user_id);
+    if (!found?.active) return;
+    const user = { ...found, authEpoch: this.authEpoch(found.id) };
+    this.db.prepare('UPDATE sessions SET last_seen_at=? WHERE token_hash=?').run(now, hashed);
+    return { user, csrfToken: row.csrf_token };
   }
   revokeSession(token: string) {
     this.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(tokenHash(token));
@@ -265,12 +274,46 @@ export class Store {
       summary: String(r.summary),
     }));
   }
-  apply(user: User, request: ActionRequest): ActionResult {
-    const hash = checkRequestEnvelope(user, request);
+  /** Current actor, re-read inside the write transaction. */
+  private actor(snapshot: User): StoredUser {
+    return currentActor(snapshot, this.getUser(snapshot.id), this.authEpoch(snapshot.id));
+  }
+  private admin(snapshot: User): StoredUser {
+    const actor = this.actor(snapshot);
+    if (actor.role !== 'admin') throw new StoreError('Forbidden', 403);
+    return actor;
+  }
+  ping() {
+    this.db.prepare('SELECT 1 AS ok').get();
+  }
+  resetDemo(orgId: string, snapshot: StoredUser): { revision: number } {
+    if (!this.demoMode) throw new StoreError('Not found', 404);
     return this.transaction(() => {
+      const actor = this.actor(snapshot);
+      if (actor.orgId !== orgId) throw new StoreError('Not found', 404);
+      const { state, event } = demoResetState(
+        this.demoMode,
+        this.getState(orgId),
+        domainUser(actor),
+        createSeedState(new Date().toISOString()),
+      );
+      this.db
+        .prepare('UPDATE org_state SET revision=?,state_json=? WHERE org_id=?')
+        .run(state.revision, JSON.stringify(state), orgId);
+      this.db.prepare('DELETE FROM idempotency WHERE org_id=?').run(orgId);
+      this.appendAudit(orgId, event);
+      return { revision: state.revision };
+    });
+  }
+  apply(snapshot: User, request: ActionRequest): ActionResult {
+    const hash = checkRequestEnvelope(snapshot, request);
+    return this.transaction(() => {
+      const current = this.actor(snapshot);
+      const user = domainUser(current);
+      checkRequestEnvelope(user, request);
       const old = this.getState(user.orgId);
       settingsGuard(old, user, request);
-      const authEpoch = this.authEpoch(user.id);
+      const authEpoch = current.authEpoch!;
       const prior = this.db
         .prepare(
           'SELECT request_hash,result_json FROM idempotency WHERE org_id=? AND user_id=? AND idem_key=?',
@@ -298,8 +341,9 @@ export class Store {
       return result;
     });
   }
-  createUser(actor: User, input: NewUserInput): StoredUser {
+  createUser(snapshot: User, input: NewUserInput): StoredUser {
     return this.transaction(() => {
+      const actor = domainUser(this.admin(snapshot));
       const user = buildNewUser(actor, input, this.getState(actor.orgId));
       try {
         this.db
@@ -324,8 +368,9 @@ export class Store {
       return user;
     });
   }
-  updateUser(actor: User, id: string, input: UserUpdateInput): StoredUser {
+  updateUser(snapshot: User, id: string, input: UserUpdateInput): StoredUser {
     return this.transaction(() => {
+      const actor = domainUser(this.admin(snapshot));
       const target = this.getUser(id);
       const plan = planUserUpdate(
         actor,
@@ -359,9 +404,10 @@ export class Store {
       this.setPassword(current, newPassword, actor);
     });
   }
-  resetPassword(actor: StoredUser, id: string, newPassword: string): void {
-    checkResetPassword(actor, id, newPassword);
+  resetPassword(snapshot: StoredUser, id: string, newPassword: string): void {
+    checkResetPassword(snapshot, id, newPassword);
     this.transaction(() => {
+      const actor = this.admin(snapshot);
       this.setPassword(checkResetTarget(actor, this.getUser(id)), newPassword, actor);
     });
   }

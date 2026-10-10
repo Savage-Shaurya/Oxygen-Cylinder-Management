@@ -1,7 +1,7 @@
 // Storage-independent rules shared by the SQLite and Postgres stores, so both enforce
 // identical checks and messages. Each store only supplies reads and writes.
 import { createHash, randomUUID } from 'node:crypto';
-import { hashPassword, type StoredUser } from './auth.js';
+import { hashPassword, safeUser, type StoredUser } from './auth.js';
 import { actionPermitted, applyAction } from './domain.js';
 import type {
   ActionRequest,
@@ -335,4 +335,76 @@ export function checkModeCompatibility(
     if (demoAccountCount) throw new Error('Demo accounts cannot run outside demo mode');
     if (stateModes.includes('demo')) throw new Error('Demo state cannot run outside demo mode');
   }
+}
+
+const SESSION_STALE = 'Session is no longer valid; sign in again';
+
+/**
+ * Re-checks, inside the store's write transaction, the actor a request authenticated as.
+ * The account must still exist, be active and belong to the organization, and its auth epoch
+ * (bumped by password changes, resets, deactivation and role or branch reductions) must be
+ * the one the session was checked against. Returns the current account to authorize with.
+ */
+export function currentActor(
+  snapshot: User & { authEpoch?: number },
+  current: StoredUser | undefined,
+  epochNow: number,
+): StoredUser {
+  if (
+    !current ||
+    !current.active ||
+    current.orgId !== snapshot.orgId ||
+    (snapshot.authEpoch !== undefined && snapshot.authEpoch !== epochNow)
+  )
+    throw new StoreError(SESSION_STALE, 401);
+  return { ...current, authEpoch: epochNow };
+}
+
+/** Domain code receives the account without credential fields. */
+export const domainUser = (user: StoredUser): User => safeUser(user);
+
+/**
+ * A session may be issued only if the credential the login verified is still current:
+ * same password hash, still active, and (when known) the same auth epoch.
+ */
+export function assertCredentialCurrent(
+  verified: StoredUser,
+  current: StoredUser | undefined,
+  epochNow: number,
+) {
+  if (
+    !current ||
+    !current.active ||
+    current.passwordHash !== verified.passwordHash ||
+    (verified.authEpoch !== undefined && verified.authEpoch !== epochNow)
+  )
+    throw new StoreError('Invalid email or password', 401);
+}
+
+/** Administrator of every branch in the organization. */
+export function assertOrganizationAdmin(actor: User, state: AppState) {
+  if (actor.role !== 'admin' || !state.branches.every((b) => actor.branchIds.includes(b.id)))
+    throw new StoreError('Organization administrator required', 403);
+}
+
+/**
+ * The presenter reset: a fresh seed story with a revision above the old one, carrying the
+ * permanent reset audit event. Only for demo stores holding demo state.
+ */
+export function demoResetState(
+  demoMode: boolean,
+  old: AppState,
+  actor: User,
+  seed: AppState,
+): { state: AppState; event: AuditEvent } {
+  if (!demoMode || old.settings?.mode !== 'demo') throw new StoreError('Not found', 404);
+  assertOrganizationAdmin(actor, old);
+  const event = managementEvent(
+    actor,
+    'demo.reset',
+    '',
+    'Demo workspace reset to the starting story',
+  );
+  const revision = Math.max(old.revision, seed.revision) + 1;
+  return { state: { ...seed, revision, audit: [event, ...seed.audit] }, event };
 }

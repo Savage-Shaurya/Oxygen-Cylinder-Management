@@ -13,16 +13,24 @@ export interface DataStore {
   readonly demoMode: boolean;
   getUserByEmail(email: string): Promise<StoredUser | undefined>;
   getUsers(orgId: string): Promise<StoredUser[]>;
-  createSession(user: User, token: string, csrf: string): Promise<void>;
+  /** Issues a session only if `user`'s verified credential is still current (else 401). */
+  createSession(user: StoredUser, token: string, csrf: string): Promise<void>;
   session(token: string): Promise<{ user: StoredUser; csrfToken: string } | undefined>;
   revokeSession(token: string): Promise<void>;
   getState(orgId: string): Promise<AppState>;
   getAudit(orgId: string): Promise<AuditEvent[]>;
+  /** Re-checks the actor (active, organization, auth epoch) inside the write transaction. */
   apply(user: User, request: ActionRequest): Promise<ActionResult>;
   createUser(actor: User, input: NewUserInput): Promise<StoredUser>;
   updateUser(actor: User, id: string, input: UserUpdateInput): Promise<StoredUser>;
   changePassword(actor: StoredUser, currentPassword: string, newPassword: string): Promise<void>;
   resetPassword(actor: StoredUser, id: string, newPassword: string): Promise<void>;
+  /** Demo only: atomically replaces the organization's business state with a fresh seed,
+   * clears its idempotency records and appends a permanent 'demo.reset' audit event.
+   * Users and sessions are kept. 404 outside demo mode; 403 unless organization admin. */
+  resetDemo(orgId: string, actor: StoredUser): Promise<{ revision: number }>;
+  /** Readiness: one database round-trip. */
+  ping(): Promise<void>;
   /** Login throttling; shared storage keeps limits consistent across server instances. */
   getLoginAttempt(key: string): Promise<LoginAttempt | undefined>;
   recordLoginFailure(key: string, now: number, windowMs: number): Promise<void>;
@@ -44,6 +52,8 @@ export function sqliteDataStore(store: Store): DataStore {
     getState: async (orgId) => store.getState(orgId),
     getAudit: async (orgId) => store.getAudit(orgId),
     apply: async (user, request) => store.apply(user, request),
+    resetDemo: async (orgId, actor) => store.resetDemo(orgId, actor),
+    ping: async () => store.ping(),
     createUser: async (actor, input) => store.createUser(actor, input),
     updateUser: async (actor, id, input) => store.updateUser(actor, id, input),
     changePassword: async (actor, current, next) => store.changePassword(actor, current, next),

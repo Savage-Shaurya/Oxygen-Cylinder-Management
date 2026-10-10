@@ -55,6 +55,47 @@ function scopedAudit(events: AuditEvent[], state: AppState, user: User): AuditEv
         e.action.startsWith('user.')),
   );
 }
+/** Delivery documents keep names and addresses; tax identities are finance data (LS-07). */
+function withoutTaxIds(order: AppState['orders'][number]) {
+  const { challanSnapshot: snapshot, ...rest } = order;
+  return {
+    ...rest,
+    unitPricePaise: 0,
+    ...(snapshot
+      ? {
+          challanSnapshot: {
+            issuer: { ...snapshot.issuer, gstin: '' },
+            recipient: { ...snapshot.recipient, gstin: '' },
+          },
+        }
+      : {}),
+  };
+}
+/**
+ * Staff names a viewer may see: themselves, people named by records they can see, and
+ * active colleagues sharing a branch. Never e-mails or anything beyond the name.
+ */
+function visiblePeople(users: StoredUser[], viewer: User, state: AppState) {
+  const referenced = new Set<string>([viewer.id]);
+  for (const o of state.orders) {
+    referenced.add(o.driverId);
+    for (const proof of o.deliveryProofs ?? []) referenced.add(proof.actorId);
+  }
+  for (const p of state.pickups ?? []) referenced.add(p.driverId);
+  for (const b of state.batches) {
+    referenced.add(b.operator);
+    if (b.releasedBy) referenced.add(b.releasedBy);
+  }
+  for (const m of state.movements) referenced.add(m.actorId);
+  for (const r of state.receipts) referenced.add(r.actorId);
+  for (const a of state.audit) referenced.add(a.actorId);
+  return users
+    .filter(
+      (u) =>
+        referenced.has(u.id) || (u.active && u.branchIds.some((b) => viewer.branchIds.includes(b))),
+    )
+    .map((u) => ({ id: u.id, name: u.name }));
+}
 function scopedState(state: AppState, user: User): AppState {
   const branches = new Set(user.branchIds);
   const cylinders = state.cylinders.filter((c) => branches.has(c.branchId));
@@ -99,10 +140,11 @@ function scopedState(state: AppState, user: User): AppState {
         freeDays: 0,
         gstin: '',
       })),
-      orders: orders.map((o) => ({ ...o, unitPricePaise: 0 })),
+      orders: orders.map(withoutTaxIds),
       rentals: [],
       invoices: [],
       receipts: [],
+      settings: { ...shared.settings, gstin: '', defaultTaxBps: 0 },
     };
   if (user.role !== 'driver') return shared;
   const todayIndia = (at: string) =>
@@ -120,7 +162,7 @@ function scopedState(state: AppState, user: User): AppState {
         (['dispatched', 'partial'].includes(o.status) ||
           (o.status === 'delivered' && o.deliveredAt && todayIndia(o.deliveredAt) === today)),
     )
-    .map((o) => ({ ...o, unitPricePaise: 0 }));
+    .map(withoutTaxIds);
   const ownPickups = pickups
     .filter((p) => p.driverId === user.id)
     .map((p) => ({ ...p, cylinderIds: p.cylinderIds.filter((id) => !p.receivedIds.includes(id)) }))
@@ -301,10 +343,11 @@ export function createHttpApp(store: DataStore, options: HttpAppOptions) {
       store.getState(user.orgId),
       store.getUsers(user.orgId),
     ]);
+    const visible = scopedState(state, user);
     return {
       user: safeUser(user),
       csrfToken,
-      state: scopedState(state, user),
+      state: visible,
       users:
         user.role === 'admin'
           ? allUsers
@@ -320,12 +363,32 @@ export function createHttpApp(store: DataStore, options: HttpAppOptions) {
                 )
                 .map((u) => ({ ...safeUser(u), email: '' }))
             : [],
-      people: allUsers.map((u) => ({ id: u.id, name: u.name })),
+      people: visiblePeople(allUsers, user, visible),
     };
   };
+  // Liveness only: no dependency calls, so it stays fast. Shape is relied on by deploy docs.
   app.get('/api/health', (_req, res) =>
     res.json({ ok: true, mode: store.demoMode ? 'demo' : 'production' }),
   );
+  // Readiness: one bounded database round-trip; never reports error details.
+  app.get('/api/ready', async (_req, res) => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        store.ping(),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('timeout')), 5_000);
+        }),
+      ]);
+      res.json({ ok: true, database: 'ok' });
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      console.error('Readiness check failed', typeof code === 'string' ? code : '');
+      res.status(503).json({ ok: false, database: 'unavailable' });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
   app.post(
     '/api/login',
     originGuard,
@@ -580,6 +643,24 @@ export function createHttpApp(store: DataStore, options: HttpAppOptions) {
       )
         throw new StoreError('Invalid user update');
       res.json(safeUser(await store.updateUser(actor, String(req.params.id), body)));
+    }),
+  );
+  // Presenter reset of the demo workspace. Outside demo mode the route does not exist.
+  const demoOnly = safe((_req, _res, next) => {
+    if (!store.demoMode) throw new StoreError('Not found', 404);
+    next();
+  });
+  app.post(
+    '/api/demo/reset',
+    demoOnly,
+    originGuard,
+    requireAuth,
+    csrf,
+    safe(async (_req, res) => {
+      const user = res.locals.user as StoredUser;
+      if (user.role !== 'admin') throw new StoreError('Forbidden', 403);
+      const { revision } = await store.resetDemo(user.orgId, user);
+      res.json({ ok: true, revision });
     }),
   );
   const voice = createVoice(options.voice ?? {});

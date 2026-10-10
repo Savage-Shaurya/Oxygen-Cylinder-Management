@@ -3,6 +3,8 @@ import type { Role, User } from '../shared/types.ts';
 
 export interface StoredUser extends User {
   passwordHash: string;
+  /** Credential/authorization version this user object was loaded with. Server-only. */
+  authEpoch?: number;
 }
 export function hashPassword(password: string): string {
   if (password.length < 12 || password.length > 256 || !/[\p{L}\p{N}\p{S}\p{P}]/u.test(password))
@@ -31,6 +33,6 @@ export function isRole(value: unknown): value is Role {
   return ['admin', 'operations', 'quality', 'finance', 'driver', 'auditor'].includes(String(value));
 }
 export function safeUser(user: StoredUser): User {
-  const { passwordHash: _secret, ...safe } = user;
+  const { passwordHash: _secret, authEpoch: _epoch, ...safe } = user;
   return safe;
 }

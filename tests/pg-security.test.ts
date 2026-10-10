@@ -11,6 +11,13 @@ import { createHttpApp } from '../server/http-app.js';
 const url = process.env.CTMS_TEST_PG_URL;
 const probeUrl = process.env.CTMS_TEST_PG_PROBE_URL;
 const skip = url ? false : 'set CTMS_TEST_PG_URL to run Postgres security tests';
+// TLS is verified for any non-local database (optionally against CTMS_TEST_PG_CA); plaintext
+// is only allowed for a loopback stand-in.
+const caCert = process.env.CTMS_TEST_PG_CA?.replaceAll('\\n', '\n') || undefined;
+const local = !!url && ['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname);
+const tls = { caCert, ssl: !local };
+const clientConfig = (connectionString: string) =>
+  pgPoolConfig({ connectionString, demoMode: true, ...tls });
 let counter = 0;
 const schemaName = () => `sec_${process.pid}_${++counter}_${Date.now() % 100000}`;
 const TABLES = [
@@ -25,19 +32,19 @@ const TABLES = [
 
 async function withSchema(work: (schema: string, store: PgStore) => Promise<void>) {
   const schema = schemaName();
-  const store = await PgStore.open({ connectionString: url!, schema, demoMode: true, ssl: false });
+  const store = await PgStore.open({ connectionString: url!, schema, demoMode: true, ...tls });
   try {
     await work(schema, store);
   } finally {
     await store.close();
-    const admin = new pg.Client({ connectionString: url });
+    const admin = new pg.Client(clientConfig(url!));
     await admin.connect();
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
     await admin.end();
   }
 }
 async function sql(connectionString: string, text: string, params: unknown[] = []) {
-  const client = new pg.Client({ connectionString });
+  const client = new pg.Client(clientConfig(connectionString));
   await client.connect();
   try {
     return await client.query(text, params);
@@ -73,7 +80,7 @@ test(
   () =>
     withSchema(async (schema) => {
       for (const role of ['anon', 'authenticated']) {
-        const client = new pg.Client({ connectionString: probeUrl });
+        const client = new pg.Client(clientConfig(probeUrl!));
         await client.connect();
         try {
           await client.query(`SET ROLE ${role}`);
@@ -156,7 +163,7 @@ test(
   { skip },
   async () => {
     const schema = schemaName();
-    const open = () => PgStore.open({ connectionString: url!, schema, demoMode: true, ssl: false });
+    const open = () => PgStore.open({ connectionString: url!, schema, demoMode: true, ...tls });
     const stores = await Promise.all([open(), open(), open()]);
     try {
       const users = await sql(url!, `SELECT COUNT(*)::int AS n FROM "${schema}".users`);
@@ -176,13 +183,13 @@ test('login lockout is shared across separate server instances', { skip }, () =>
       connectionString: url!,
       schema,
       demoMode: true,
-      ssl: false,
+      ...tls,
     });
     const first = await PgStore.open({
       connectionString: url!,
       schema,
       demoMode: true,
-      ssl: false,
+      ...tls,
     });
     const servers: Server[] = [];
     try {
@@ -214,7 +221,7 @@ test('login lockout is shared across separate server instances', { skip }, () =>
   }),
 );
 
-test('TLS settings verify the server certificate when a CA is supplied', () => {
+test('TLS settings always verify the server certificate', () => {
   const verified = pgPoolConfig({
     connectionString: 'postgresql://u:p@db.example.com:6543/postgres?sslmode=require',
     demoMode: true,
@@ -226,5 +233,6 @@ test('TLS settings verify the server certificate when a CA is supplied', () => {
   });
   assert.equal(String(verified.connectionString).includes('sslmode'), false);
   const encryptedOnly = pgPoolConfig({ connectionString: 'postgresql://u:p@h/db', demoMode: true });
-  assert.deepEqual(encryptedOnly.ssl, { rejectUnauthorized: false });
+  // Without a CA the system's trusted roots are used; verification is never switched off.
+  assert.deepEqual(encryptedOnly.ssl, { rejectUnauthorized: true });
 });

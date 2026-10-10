@@ -1,8 +1,48 @@
-node_modules
+# Deny by default: the build context is an allowlist, so secrets, local data and
+# reference material can never reach a Docker build or image.
+*
+
+# Build inputs only.
+!package.json
+!package-lock.json
+!tsconfig.json
+!vite.config.ts
+!index.html
+!src/
+!shared/
+!server/
+!public/
+
+# Never, at any depth, even inside the allowed folders.
+**/keys.txt
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/.env
+**/.env.*
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.log
+**/node_modules
+**/.git
+**/.DS_Store
+**/.app-test-*
+**/test-results
+
+# Listed explicitly as well, for readers (already excluded by the first rule).
+keys.txt
+.env*
+_resources
 data
-.git
-.env
-.env.*
 dist
-test-results
-*.log
+api
+docs
+scripts
+tests
+node_modules
+.git
+.claude
+*.md

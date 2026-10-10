@@ -14,13 +14,17 @@ import {
   SESSION_IDLE_MS,
   SESSION_TTL_MS,
   StoreError,
+  assertCredentialCurrent,
   assertValidPassword,
   buildNewUser,
   checkModeCompatibility,
   checkRequestEnvelope,
   checkResetPassword,
   checkResetTarget,
+  currentActor,
+  demoResetState,
   demoRoles,
+  domainUser,
   idempotencyResult,
   managementEvent,
   passwordEvent,
@@ -61,23 +65,38 @@ export interface PgStoreOptions {
   demoMode: boolean;
   /** Private schema name; letters, digits and underscores only. */
   schema?: string;
-  /** PEM certificate authority for verifying the database TLS certificate. */
+  /** PEM certificate authority for verifying the database TLS certificate. Without it the
+   * server certificate is verified against the system's trusted roots. */
   caCert?: string;
-  /** Require TLS (default true); only disable for a local test database. */
+  /** TLS is always on and always verified. `false` (DATABASE_SSL=disable) is accepted only
+   * for a database on this machine (localhost, 127.0.0.1 or ::1), such as a test stand-in. */
   ssl?: boolean;
   poolMax?: number;
 }
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/** Whether a connection string points at a database on this machine. */
+export function isLocalDatabase(connectionString: string): boolean {
+  return LOCAL_HOSTS.has(new URL(connectionString).hostname.toLowerCase());
+}
+
 export function pgPoolConfig(options: PgStoreOptions): pg.PoolConfig {
-  // sslmode in the URL would override the explicit TLS settings below.
+  // TLS options in the URL would override the explicit settings below (pg merges the parsed
+  // URL over the config), so every one of them is removed.
   const url = new URL(options.connectionString);
-  url.searchParams.delete('sslmode');
+  for (const key of [...url.searchParams.keys()])
+    if (/^ssl|^uselibpqcompat$/i.test(key)) url.searchParams.delete(key);
+  if (options.ssl === false && !isLocalDatabase(options.connectionString))
+    throw new Error(
+      'Refusing an unencrypted database connection: DATABASE_SSL=disable is only allowed for a local database',
+    );
   const ssl =
     options.ssl === false
       ? false
       : options.caCert
         ? { ca: options.caCert, rejectUnauthorized: true }
-        : { rejectUnauthorized: false };
+        : { rejectUnauthorized: true };
   return {
     connectionString: url.toString(),
     ssl,
@@ -89,6 +108,15 @@ export function pgPoolConfig(options: PgStoreOptions): pg.PoolConfig {
   };
 }
 
+const TLS_ERRORS = new Set([
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_HAS_EXPIRED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
 export class PgStore implements DataStore {
   private constructor(
     private readonly pool: pg.Pool,
@@ -99,8 +127,6 @@ export class PgStore implements DataStore {
   static async open(options: PgStoreOptions): Promise<PgStore> {
     const schema = options.schema ?? 'cylvero';
     if (!/^[a-z_][a-z0-9_]{0,40}$/.test(schema)) throw new Error('Invalid schema name');
-    if (options.ssl !== false && !options.caCert)
-      console.warn('Database TLS is encrypted but the server certificate is not verified.');
     const pool = new pg.Pool(pgPoolConfig(options));
     pool.on('error', (error) => console.error('Idle database connection error', error.message));
     const store = new PgStore(pool, schema, options.demoMode);
@@ -108,6 +134,11 @@ export class PgStore implements DataStore {
       await store.initialize();
     } catch (error) {
       await pool.end();
+      const code = (error as { code?: string }).code;
+      if (code && TLS_ERRORS.has(code))
+        throw new Error(
+          `Database TLS certificate could not be verified (${code}); set DATABASE_CA_CERT to the provider's CA certificate`,
+        );
       throw error;
     }
     return store;
@@ -294,37 +325,61 @@ export class PgStore implements DataStore {
   }
 
   async getUserByEmail(email: string) {
-    const { rows } = await this.pool.query(`SELECT * FROM ${this.t('users')} WHERE email=$1`, [
-      email.toLowerCase(),
-    ]);
-    return rows[0] && this.rowUser(rows[0]);
+    const { rows } = await this.pool.query(
+      `SELECT u.*, COALESCE(e.epoch, 0) AS auth_epoch FROM ${this.t('users')} u
+       LEFT JOIN ${this.t('user_auth_epoch')} e ON e.user_id = u.id WHERE u.email=$1`,
+      [email.toLowerCase()],
+    );
+    return rows[0] && { ...this.rowUser(rows[0]), authEpoch: Number(rows[0].auth_epoch) };
   }
   getUsers(orgId: string) {
     return this.users(this.pool, orgId);
   }
-  async createSession(user: User, token: string, csrf: string) {
+  /** Issues a session only while the verified credential is still current (LS-06). The
+   * user row lock orders this against password, role and activity changes, which update that
+   * row and then delete the user's sessions in the same transaction. */
+  async createSession(user: StoredUser, token: string, csrf: string) {
     const now = Date.now();
     await this.pool.query(
       `DELETE FROM ${this.t('sessions')} WHERE expires_at<=$1 OR last_seen_at<=$2`,
       [now, now - SESSION_IDLE_MS],
     );
-    await this.pool.query(
-      `INSERT INTO ${this.t('sessions')}(token_hash,user_id,csrf_token,expires_at,last_seen_at)
-       VALUES ($1,$2,$3,$4,$5)`,
-      [tokenHash(token), user.id, csrf, now + SESSION_TTL_MS, now],
-    );
+    await this.tx(async (db) => {
+      const { rows } = await db.query(`SELECT * FROM ${this.t('users')} WHERE id=$1 FOR UPDATE`, [
+        user.id,
+      ]);
+      assertCredentialCurrent(
+        user,
+        rows[0] && this.rowUser(rows[0]),
+        await this.authEpoch(db, user.id),
+      );
+      await db.query(
+        `INSERT INTO ${this.t('sessions')}(token_hash,user_id,csrf_token,expires_at,last_seen_at)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [tokenHash(token), user.id, csrf, now + SESSION_TTL_MS, now],
+      );
+    });
   }
   async session(token: string) {
     const now = Date.now();
     const hashed = tokenHash(token);
-    const { rows } = await this.pool.query<{ user_id: string; csrf_token: string }>(
-      `SELECT user_id,csrf_token FROM ${this.t('sessions')}
-       WHERE token_hash=$1 AND expires_at>$2 AND last_seen_at>$3`,
+    const { rows } = await this.pool.query<{
+      user_id: string;
+      csrf_token: string;
+      auth_epoch: string | number;
+    }>(
+      // The epoch is read in the same statement snapshot as the session row: a revocation
+      // either committed first (row gone) or bumps the epoch later, which the write
+      // transaction then sees as a mismatch.
+      `SELECT s.user_id, s.csrf_token, COALESCE(e.epoch, 0) AS auth_epoch
+       FROM ${this.t('sessions')} s LEFT JOIN ${this.t('user_auth_epoch')} e ON e.user_id = s.user_id
+       WHERE s.token_hash=$1 AND s.expires_at>$2 AND s.last_seen_at>$3`,
       [hashed, now, now - SESSION_IDLE_MS],
     );
     if (!rows[0]) return;
-    const user = await this.user(this.pool, rows[0].user_id);
-    if (!user?.active) return;
+    const found = await this.user(this.pool, rows[0].user_id);
+    if (!found?.active) return;
+    const user = { ...found, authEpoch: Number(rows[0].auth_epoch) };
     await this.pool.query(`UPDATE ${this.t('sessions')} SET last_seen_at=$1 WHERE token_hash=$2`, [
       now,
       hashed,
@@ -356,13 +411,54 @@ export class PgStore implements DataStore {
     }));
   }
 
-  async apply(user: User, request: ActionRequest): Promise<ActionResult> {
-    const hash = checkRequestEnvelope(user, request);
+  /** Current actor, re-read after the organization lock is held. */
+  private async actor(db: Db, snapshot: User): Promise<StoredUser> {
+    return currentActor(
+      snapshot,
+      await this.user(db, snapshot.id),
+      await this.authEpoch(db, snapshot.id),
+    );
+  }
+  private async admin(db: Db, snapshot: User): Promise<StoredUser> {
+    const actor = await this.actor(db, snapshot);
+    if (actor.role !== 'admin') throw new StoreError('Forbidden', 403);
+    return actor;
+  }
+  async ping() {
+    await this.pool.query(`SELECT 1 FROM ${this.t('org_state')} LIMIT 1`);
+  }
+  async resetDemo(orgId: string, snapshot: StoredUser): Promise<{ revision: number }> {
+    if (!this.demoMode) throw new StoreError('Not found', 404);
+    return this.tx(async (db) => {
+      const old = await this.state(db, orgId, true);
+      const actor = await this.actor(db, snapshot);
+      if (actor.orgId !== orgId) throw new StoreError('Not found', 404);
+      const { state, event } = demoResetState(
+        this.demoMode,
+        old,
+        domainUser(actor),
+        createSeedState(new Date().toISOString()),
+      );
+      await db.query(
+        `UPDATE ${this.t('org_state')} SET revision=$1,state_json=$2 WHERE org_id=$3`,
+        [state.revision, JSON.stringify(state), orgId],
+      );
+      await db.query(`DELETE FROM ${this.t('idempotency')} WHERE org_id=$1`, [orgId]);
+      await this.appendAudit(db, orgId, event);
+      return { revision: state.revision };
+    });
+  }
+
+  async apply(snapshot: User, request: ActionRequest): Promise<ActionResult> {
+    const hash = checkRequestEnvelope(snapshot, request);
     return this.tx(async (db) => {
       // The row lock serializes writers per organization, like SQLite's BEGIN IMMEDIATE.
-      const old = await this.state(db, user.orgId, true);
+      const old = await this.state(db, snapshot.orgId, true);
+      const current = await this.actor(db, snapshot);
+      const user = domainUser(current);
+      checkRequestEnvelope(user, request);
       settingsGuard(old, user, request);
-      const authEpoch = await this.authEpoch(db, user.id);
+      const authEpoch = current.authEpoch!;
       const { rows: prior } = await db.query<{ request_hash: string; result_json: string }>(
         `SELECT request_hash,result_json FROM ${this.t('idempotency')}
          WHERE org_id=$1 AND user_id=$2 AND idem_key=$3`,
@@ -389,9 +485,11 @@ export class PgStore implements DataStore {
     });
   }
 
-  async createUser(actor: User, input: NewUserInput): Promise<StoredUser> {
+  async createUser(snapshot: User, input: NewUserInput): Promise<StoredUser> {
     return this.tx(async (db) => {
-      const user = buildNewUser(actor, input, await this.state(db, actor.orgId, true));
+      const state = await this.state(db, snapshot.orgId, true);
+      const actor = domainUser(await this.admin(db, snapshot));
+      const user = buildNewUser(actor, input, state);
       try {
         await db.query('SAVEPOINT create_user');
         await db.query(`INSERT INTO ${this.t('users')} VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [
@@ -417,9 +515,10 @@ export class PgStore implements DataStore {
     });
   }
 
-  async updateUser(actor: User, id: string, input: UserUpdateInput): Promise<StoredUser> {
+  async updateUser(snapshot: User, id: string, input: UserUpdateInput): Promise<StoredUser> {
     return this.tx(async (db) => {
-      const state = await this.state(db, actor.orgId, true);
+      const state = await this.state(db, snapshot.orgId, true);
+      const actor = domainUser(await this.admin(db, snapshot));
       const target = await this.user(db, id);
       const plan = planUserUpdate(
         actor,
@@ -459,10 +558,11 @@ export class PgStore implements DataStore {
       await this.setPassword(db, current, newPassword, actor);
     });
   }
-  async resetPassword(actor: StoredUser, id: string, newPassword: string) {
-    checkResetPassword(actor, id, newPassword);
+  async resetPassword(snapshot: StoredUser, id: string, newPassword: string) {
+    checkResetPassword(snapshot, id, newPassword);
     await this.tx(async (db) => {
-      await this.state(db, actor.orgId, true);
+      await this.state(db, snapshot.orgId, true);
+      const actor = await this.admin(db, snapshot);
       await this.setPassword(
         db,
         checkResetTarget(actor, await this.user(db, id)),
