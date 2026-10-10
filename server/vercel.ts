@@ -32,6 +32,12 @@ export function restoreApiPath(rawUrl: string): string {
   const url = new URL(rawUrl, 'http://internal');
   const forwarded = url.searchParams.get('__path');
   url.searchParams.delete('__path');
+  // Vercel also appends the named rewrite segment as "path"; drop it only when it is that copy.
+  if (forwarded !== null) {
+    const copies = url.searchParams.getAll('path');
+    if (copies.length && copies.every((value) => value === forwarded))
+      url.searchParams.delete('path');
+  }
   if (forwarded !== null && (url.pathname === '/api' || url.pathname === '/api/'))
     url.pathname = `/api/${forwarded.replace(/^\/+/, '')}`;
   return url.pathname + url.search;

@@ -37015,7 +37015,11 @@ function createHttpApp(store, options) {
     requireAuth,
     safe(async (req, res) => {
       const user = res.locals.user;
-      const { __path: _routing, ...query } = req.query ?? {};
+      const {
+        __path: _routing,
+        path: _segment,
+        ...query
+      } = req.query ?? {};
       const result = tallyExportResponse(
         scopedState(await store.getState(user.orgId), user),
         user,
@@ -38639,6 +38643,11 @@ function restoreApiPath(rawUrl) {
   const url = new URL(rawUrl, "http://internal");
   const forwarded = url.searchParams.get("__path");
   url.searchParams.delete("__path");
+  if (forwarded !== null) {
+    const copies = url.searchParams.getAll("path");
+    if (copies.length && copies.every((value) => value === forwarded))
+      url.searchParams.delete("path");
+  }
   if (forwarded !== null && (url.pathname === "/api" || url.pathname === "/api/"))
     url.pathname = `/api/${forwarded.replace(/^\/+/, "")}`;
   return url.pathname + url.search;

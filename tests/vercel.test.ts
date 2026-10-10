@@ -47,3 +47,11 @@ test('Vercel requests lose the internal __path parameter before Express reads th
   assert.equal(req.url, '/api/export/tally?from=2026-01-01');
   assert.equal(Object.hasOwn(req, 'query'), false);
 });
+
+test('the duplicate path segment Vercel appends is removed, other values are kept', () => {
+  assert.equal(
+    restoreApiPath('/api?__path=export%2Ftally&path=export%2Ftally&from=2026-01-01'),
+    '/api/export/tally?from=2026-01-01',
+  );
+  assert.equal(restoreApiPath('/api?__path=audit&path=other'), '/api/audit?path=other');
+});
