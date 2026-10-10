@@ -194,6 +194,21 @@ const en = {
 
   'result.saving': 'Saving in {n}',
   'result.sending': 'Saving',
+  'result.unsure': 'Not sure if it was saved. It will be checked.',
+  'result.unsureQueued':
+    'Kept on this phone with the same record. It will be checked when the network is back.',
+  'result.unsureStay': 'Do not do it again. Tap Check now when the network is back.',
+  'result.checkNow': 'Check now',
+  'result.checking': 'Checking',
+  'result.leaveSends': 'Leaving this screen sends it now.',
+  'result.leftSaved': 'Sent when you left the screen. Saved: {sentence}',
+  'result.leftUnsure':
+    'Sent when you left the screen. Not sure if it was saved. Do not do it again; ask the office to check.',
+  'result.leftUnsureQueued':
+    'Sent when you left the screen. Not sure if it was saved. It is kept on this phone and will be checked.',
+  'result.leftFailed': 'Sent when you left the screen, but it was not saved. {reason}',
+  'result.backToScan': 'Back to scan',
+  'offline.review': 'Deliveries kept on this phone',
   'error.offline': 'No network. Try again.',
   'error.changed': 'Something changed. Check again.',
   'error.notAllowed': 'Not allowed. Ask office.',

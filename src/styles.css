@@ -2182,3 +2182,65 @@ td strong {
     display: none;
   }
 }
+
+/* Headline numbers that open the exact records they count. */
+.stat-label,
+.stat-value,
+.stat-detail {
+  display: block;
+}
+button.stat-link {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+button.stat-link:hover {
+  border-color: #b9d3c3;
+  background: #f8fbf8;
+}
+button.stat-link:focus-visible,
+.hero-link:focus-visible {
+  outline: 2px solid #126b57;
+  outline-offset: 2px;
+}
+.hero-link {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.hero-link:hover strong,
+.hero-link:hover .hero-number {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* Presenter-only demo reset, kept apart from everyday settings. */
+.danger-zone {
+  margin-top: 20px;
+  padding: 18px 20px 20px;
+  border-color: #efc9c2;
+}
+.danger-zone .section-heading {
+  padding: 0 0 8px;
+}
+.danger-zone .eyebrow {
+  color: #a8412f;
+}
+.danger-confirm {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid #efc9c2;
+  border-radius: 10px;
+  background: #fff7f5;
+}
+.danger-confirm:focus {
+  outline: 2px solid #a8412f;
+  outline-offset: 2px;
+}

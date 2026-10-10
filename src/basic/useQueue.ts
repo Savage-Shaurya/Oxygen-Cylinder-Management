@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { User } from '../../shared/types';
 import { listQueuedDeliveries, syncQueuedDeliveries } from '../offline';
 
@@ -9,9 +9,15 @@ export function useQueue(user: User, onSynced: () => Promise<void> | void) {
   const [busy, setBusy] = useState(false);
   const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
 
+  // A late answer for the previous account must not show its counts to the next one.
+  const activeUser = useRef(user.id);
+  activeUser.current = user.id;
+
   const refresh = useCallback(() => {
-    listQueuedDeliveries(user.id)
+    const requested = user.id;
+    listQueuedDeliveries(requested)
       .then((records) => {
+        if (activeUser.current !== requested) return;
         setPending(records.filter((r) => r.status === 'pending').length);
         setConflicts(records.filter((r) => r.status === 'conflict').length);
       })

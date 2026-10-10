@@ -15,6 +15,7 @@ import {
   SpeakerSlash,
   Truck,
   Warehouse,
+  X,
 } from '@phosphor-icons/react';
 import type { ActionResult, Bootstrap, Role } from '../../shared/types';
 import { LANGS, setLang, t, useLang, type TextKey } from '../i18n';
@@ -34,6 +35,8 @@ import { pointAt, preloadMotion, press, tilesIn } from './motion';
 import { CylinderPic } from './pictures';
 import { readSetting, writeSetting } from './storage';
 import { useQueue } from './useQueue';
+import { flushWaitingCommits, onBackgroundResult, type BackgroundResult } from './Commit';
+import OfflinePanel from '../OfflinePanel';
 import CameBack from './jobs/CameBack';
 import Check from './jobs/Check';
 import Filled from './jobs/Filled';
@@ -99,8 +102,36 @@ export default function BasicApp({
   const [menu, setMenu] = useState(false);
   const [confirmExit, setConfirmExit] = useState(false);
   const [hint, setHint] = useState(false);
+  const [toast, setToast] = useState<BackgroundResult | null>(null);
+  const [review, setReview] = useState(false);
   const queue = useQueue(session.user, refresh);
   const { state, user } = session;
+
+  // A send that finished after its screen closed is reported here, never silently.
+  useEffect(
+    () =>
+      onBackgroundResult((result) => {
+        setToast(result);
+        if (result.kind === 'saved') success(result.text);
+        else failure(result.text);
+      }),
+    [],
+  );
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 9000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  /** Sends anything still in its undo wait first; stays here if it was not confirmed. */
+  async function leave(next: () => void | Promise<void>) {
+    if (!(await flushWaitingCommits())) {
+      setMenu(false);
+      setConfirmExit(false);
+      return;
+    }
+    await next();
+  }
 
   useEffect(() => {
     preloadMotion();
@@ -151,9 +182,18 @@ export default function BasicApp({
         {queue.pending + queue.conflicts > 0 && (
           <button
             className="b-cloud"
-            disabled={queue.busy || !queue.online || !queue.pending}
-            aria-label={`${t('offline.waiting', { n: queue.pending })}. ${t('offline.send')}`}
+            disabled={queue.busy || (!queue.conflicts && (!queue.online || !queue.pending))}
+            aria-label={
+              queue.pending
+                ? `${t('offline.waiting', { n: queue.pending })}. ${t('offline.send')}`
+                : `${t('offline.needsOffice', { n: queue.conflicts })} ${t('offline.review')}`
+            }
             onClick={async () => {
+              // Deliveries that need the office can be reviewed and exported from here.
+              if (!queue.pending || !queue.online) {
+                setReview(true);
+                return;
+              }
               try {
                 const result = await queue.sync();
                 const words = [
@@ -172,7 +212,11 @@ export default function BasicApp({
           </button>
         )}
         {toOffice && (
-          <button className="b-office" onClick={toOffice} aria-label={t('menu.office')}>
+          <button
+            className="b-office"
+            onClick={() => void leave(toOffice)}
+            aria-label={t('menu.office')}
+          >
             <Briefcase size={22} weight="duotone" />
             <span>{t('menu.office')}</span>
           </button>
@@ -227,7 +271,7 @@ export default function BasicApp({
           <span>{t('menu.howTo')}</span>
         </button>
         {toOffice && (
-          <button className="b-menu-row" onClick={toOffice}>
+          <button className="b-menu-row" onClick={() => void leave(toOffice)}>
             <Briefcase size={30} weight="duotone" />
             <span>{t('menu.office')}</span>
           </button>
@@ -236,7 +280,7 @@ export default function BasicApp({
           <div className="b-confirm">
             <p>{t('menu.signOutSure')}</p>
             <div className="b-row">
-              <BigButton tone="red" onClick={() => void signOut()}>
+              <BigButton tone="red" onClick={() => void leave(signOut)}>
                 <SignOut size={28} weight="bold" /> {t('menu.signOut')}
               </BigButton>
               <BigButton tone="teal" variant="soft" onClick={() => setConfirmExit(false)}>
@@ -264,6 +308,19 @@ export default function BasicApp({
     );
 
   const Job = screen ? jobs[screen.job] : null;
+  const toastView = toast && (
+    <div className={`b-toast ${toast.kind}`} role="status" aria-live="polite">
+      <p>{toast.text}</p>
+      <button aria-label={t('common.close')} onClick={() => setToast(null)}>
+        <X size={20} weight="bold" />
+      </button>
+    </div>
+  );
+  const reviewSheet = review && (
+    <Sheet title={t('offline.review')} onClose={() => setReview(false)}>
+      <OfflinePanel user={user} state={state} onSynced={refresh} />
+    </Sheet>
+  );
   return (
     <div className="basic-app">
       {header}
@@ -291,6 +348,8 @@ export default function BasicApp({
         )}
       </main>
       {menuSheet}
+      {reviewSheet}
+      {toastView}
     </div>
   );
 }

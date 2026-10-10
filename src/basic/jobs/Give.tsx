@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   DeviceMobile,
@@ -6,8 +6,9 @@ import {
   Truck,
   User as UserIcon,
 } from '@phosphor-icons/react';
-import { ApiError } from '../../api';
-import { queueDelivery } from '../../offline';
+import { actionEnvelope, ApiError, isUncertain } from '../../api';
+import { discardQueuedDelivery, queueDelivery } from '../../offline';
+import { canRetryDelivery } from '../../offline-rules';
 import { t } from '../../i18n';
 import Commit, { type Outcome } from '../Commit';
 import { Dots, EmptyState, PersonCard, Screen, Sheet } from '../components';
@@ -35,6 +36,8 @@ export default function Give({ state, user, run, home, params }: JobProps) {
   // After a refresh, keep only cylinders that can still be given.
   // After saving, these cylinders leave the truck, so the result keeps what was sent.
   const [sent, setSent] = useState<string[]>([]);
+  // The key of this delivery's evidence on the phone, if an unconfirmed send was kept there.
+  const queuedKey = useRef('');
   const scanned = step === 'commit' ? sent : scans.ids.filter((id) => remaining.includes(id));
   const customer = party?.name ?? '';
   const sentence = t('give.summary', { n: scanned.length, customer });
@@ -201,20 +204,33 @@ export default function Give({ state, user, run, home, params }: JobProps) {
       onFixScan={() => setStep('scan')}
       send={async (): Promise<Outcome> => {
         const payload = { orderId: order.id, cylinderIds: scanned, recipient, notes: '' };
+        const forget = async () => {
+          if (!queuedKey.current) return;
+          await discardQueuedDelivery(user.id, queuedKey.current).catch(() => undefined);
+          queuedKey.current = '';
+        };
         try {
           await run('order.deliver', payload);
+          // The server acknowledged this exact command, so its phone copy is no longer needed.
+          await forget();
           rememberInList(`cylvero-recipients:${order.partyId}`, recipient);
           return { ok: true, sentence };
         } catch (error) {
-          if (error instanceof ApiError && error.status === 0) {
+          if (isUncertain(error)) {
+            // It may have been saved. Keep the very same command (same key) on the phone so a
+            // later check or sync reconciles it instead of delivering again.
             try {
-              await queueDelivery(user.id, payload);
+              const record = await queueDelivery(user.id, payload, actionEnvelope(error));
+              queuedKey.current = record.id;
               rememberInList(`cylvero-recipients:${order.partyId}`, recipient);
-              return { ok: true, sentence, savedOnPhone: true };
-            } catch (queueError) {
-              return { ok: false, error: queueError };
+              return { ok: false, error, queued: true };
+            } catch {
+              return { ok: false, error };
             }
           }
+          // A definite refusal of this command: its phone copy would only become a conflict.
+          if (error instanceof ApiError && !canRetryDelivery(error.status, error.message))
+            await forget();
           return { ok: false, error };
         }
       }}

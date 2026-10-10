@@ -319,7 +319,9 @@ test('Give saves to the phone queue when the network is down', async () => {
     await start();
     const { tags } = await openGive(h);
     await scanAndName(tags, 'Night Nurse');
-    await screen.findByText('Saved on phone. It will send later.', {}, COMMIT_WAIT);
+    // A dropped connection may follow a saved delivery, so it is "not sure", kept on the phone.
+    await screen.findByText('Not sure if it was saved. It will be checked.', {}, COMMIT_WAIT);
+    await screen.findByText(/Kept on this phone with the same record/);
     const queued = await listQueuedDeliveries('u-driver');
     assert.equal(queued.length, 1);
     assert.equal(queued[0].action.type, 'order.deliver');

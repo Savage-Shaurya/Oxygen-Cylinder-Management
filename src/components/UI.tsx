@@ -224,18 +224,28 @@ export function Stat({
   value,
   detail,
   tone = 'normal',
+  onClick,
 }: {
   label: string;
   value: string | number;
   detail?: string;
   tone?: 'normal' | 'warn' | 'good';
+  /** Opens the exact records this number counts. Without it the number is plain text. */
+  onClick?: () => void;
 }) {
-  return (
-    <div className={`stat stat-${tone}`}>
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
-      {detail && <div className="stat-detail">{detail}</div>}
-    </div>
+  const body = (
+    <>
+      <span className="stat-label">{label}</span>
+      <span className="stat-value">{value}</span>
+      {detail && <span className="stat-detail">{detail}</span>}
+    </>
+  );
+  return onClick ? (
+    <button type="button" className={`stat stat-${tone} stat-link`} onClick={onClick}>
+      {body}
+    </button>
+  ) : (
+    <div className={`stat stat-${tone}`}>{body}</div>
   );
 }
 export type MenuItem = { label: string; onSelect: () => void; icon?: ReactNode };

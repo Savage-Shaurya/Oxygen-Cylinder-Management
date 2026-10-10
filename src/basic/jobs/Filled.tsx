@@ -141,7 +141,17 @@ export default function Filled({ state, user, run, home }: JobProps) {
       }
       sentence={sentence}
       onUndo={() => setStep('lot')}
-      onFixScan={() => setStep('scan')}
+      onFixScan={() => {
+        // Keep only empties that can still be filled together.
+        const kept: string[] = [];
+        for (const id of scans.ids) {
+          const c = state.cylinders.find((x) => x.id === id);
+          const base = state.cylinders.find((x) => x.id === kept[0]);
+          if (c && problem(c, base) === null) kept.push(id);
+        }
+        scans.set(kept);
+        setStep('scan');
+      }}
       onHome={home}
       send={async () => {
         await run('batch.create', {

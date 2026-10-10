@@ -1584,3 +1584,61 @@ button.b-card:active {
   flex-direction: column;
   gap: 14px;
 }
+
+/* ---------- Not sure if it was saved: neither the green tick nor the red cross ---------- */
+.b-result.unsure .b-result-text {
+  color: var(--b-ink, #2b2b2b);
+}
+.b-unsure-icon {
+  color: #b7791f;
+}
+.b-lines li.unsure {
+  background: #fff4cc;
+  color: #7a5200;
+}
+.b-result-text:focus {
+  outline: none;
+}
+.b-result-text:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 4px;
+}
+
+/* ---------- A result that arrived after its screen closed ---------- */
+.b-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 40;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(560px, calc(100% - 32px));
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: #fff;
+  border: 2px solid var(--b-line);
+  box-shadow: var(--b-shadow);
+  font-weight: 700;
+}
+.b-toast.saved {
+  border-color: var(--b-green);
+}
+.b-toast.failed {
+  border-color: var(--b-red);
+}
+.b-toast.unsure {
+  border-color: #e4c77e;
+}
+.b-toast p {
+  flex: 1;
+  margin: 0;
+}
+.b-toast button {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  padding: 4px;
+}

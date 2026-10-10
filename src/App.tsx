@@ -40,7 +40,16 @@ import type {
   Movement,
 } from '../shared/types';
 import { GASES, ROLES } from '../shared/types';
-import { request, login, bootstrap, logout, act, ApiError } from './api';
+import {
+  request,
+  login,
+  bootstrap,
+  logout,
+  act,
+  ApiError,
+  forgetPendingActions,
+  isUncertain,
+} from './api';
 import { ActionForm, plainOfficeError, type FormField, type Option } from './components/ActionForm';
 import {
   Badge,
@@ -60,7 +69,8 @@ import PrintChallan from './PrintChallan';
 import DemoWalkthrough from './DemoWalkthrough';
 import LoginScreen from './LoginScreen';
 import LifeStory from './LifeStory';
-import { queueDelivery, listQueuedDeliveries } from './offline';
+import { stopSpeaking } from './basic/feedback';
+import { queueDelivery, listQueuedDeliveries, clearQueuedDeliveries } from './offline';
 import { allowedPartyTypes } from './party-options';
 import { availableCredit, creditNoteAvailable, depositBalance } from '../shared/finance';
 import { downloadCylinderImportTemplate, CYLINDER_IMPORT_COLUMNS } from './import-template';
@@ -192,6 +202,25 @@ const custodian = (s: AppState, c: Cylinder) => {
   return party(s, c.custodianId);
 };
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// One definition per headline number, shared by Overview and the list it opens.
+const readyToDispatch = (s: AppState, c: Cylinder) =>
+  c.custody === 'plant' &&
+  c.contents === 'full' &&
+  c.condition === 'serviceable' &&
+  c.testDue >= today() &&
+  !!c.batchId &&
+  s.batches.some((b) => b.id === c.batchId && b.status === 'released');
+const needsSafetyReview = (c: Cylinder) => c.condition !== 'serviceable' || c.testDue < today();
+const activeOrder = (o: Order) => ['open', 'dispatched', 'partial'].includes(o.status);
+type DetailKind = 'cylinder' | 'order' | 'batch' | 'party' | 'invoice';
+/** The record an exception is about, so its row can open it. */
+function exceptionRecord(s: AppState, entityId: string): { kind: DetailKind; id: string } | null {
+  if (s.cylinders.some((c) => c.id === entityId)) return { kind: 'cylinder', id: entityId };
+  if (s.orders.some((o) => o.id === entityId)) return { kind: 'order', id: entityId };
+  if (s.batches.some((b) => b.id === entityId)) return { kind: 'batch', id: entityId };
+  if (s.parties.some((p) => p.id === entityId)) return { kind: 'party', id: entityId };
+  return null;
+}
 // Movement records store "custody:id" tokens and raw references; show readable names.
 const place = (s: AppState, token: string) => {
   if (token === 'new') return 'New record';
@@ -278,12 +307,40 @@ function parseCsv(input: string): string[][] {
 export default function App() {
   const [session, setSession] = useState<Bootstrap | null>(null);
   const latestSession = useRef<Bootstrap | null>(null);
+  // Bumped at every sign-in, sign-out and demo reset. A response that started in an older
+  // generation belongs to another session and must never be shown (LS-09).
+  const generation = useRef(0);
+  const navigatedTo = useRef<View | null>(null);
   const factories = useRef<Record<string, (id?: string) => void>>({});
   const captureSpec = useRef<{ active: boolean; spec: FormSpec | null }>({
     active: false,
     spec: null,
   });
   latestSession.current = session;
+  /** Starts a new session generation (sign-in, sign-out, reset). */
+  function adopt(next: Bootstrap | null) {
+    generation.current++;
+    latestSession.current = next;
+    setSession(next);
+  }
+  /** Applies a fresh copy of the same session, unless the session changed meanwhile. */
+  function refreshed(gen: number, userId: string, next: Bootstrap) {
+    if (generation.current !== gen || latestSession.current?.user.id !== userId) return false;
+    if (next.user.id !== userId) {
+      // The server now has a different account signed in here: show that one cleanly.
+      adopt(next);
+      return false;
+    }
+    latestSession.current = next;
+    setSession(next);
+    return true;
+  }
+  async function reloadSession() {
+    const current = latestSession.current;
+    if (!current) return;
+    const gen = generation.current;
+    refreshed(gen, current.user.id, await bootstrap());
+  }
   const [loading, setLoading] = useState(true);
   const [loginError, setLoginError] = useState('');
   const [serverMode, setServerMode] = useState<'demo' | 'live'>('live');
@@ -306,9 +363,12 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   useEffect(() => {
+    const gen = generation.current;
     Promise.allSettled([bootstrap(), request<{ mode: 'demo' | 'live' }>('/api/health')])
       .then(([sessionResult, healthResult]) => {
-        if (sessionResult.status === 'fulfilled') setSession(sessionResult.value);
+        // A sign-in that finished first wins over this older start-up answer.
+        if (sessionResult.status === 'fulfilled' && generation.current === gen)
+          adopt(sessionResult.value);
         if (healthResult.status === 'fulfilled') setServerMode(healthResult.value.mode);
         if (
           sessionResult.status === 'rejected' &&
@@ -323,6 +383,11 @@ export default function App() {
   useEffect(() => {
     const sync = () => {
       const h = location.hash.slice(1) as View;
+      // A drill-down already set this page and its filter; keep that filter.
+      if (h === navigatedTo.current) {
+        navigatedTo.current = null;
+        return;
+      }
       if (labels[h]) {
         setView(h);
         setSearch('');
@@ -342,7 +407,9 @@ export default function App() {
   async function submitLogin(email: string, password: string) {
     try {
       setLoginError('');
-      setSession(await login(email, password));
+      const gen = generation.current;
+      const next = await login(email, password);
+      if (generation.current === gen) adopt(next);
     } catch (e) {
       setLoginError(e instanceof Error ? e.message : 'Sign in failed');
     }
@@ -366,15 +433,46 @@ export default function App() {
       );
       return;
     }
-    setSession(null);
+    // Nothing of the old account stays on screen, and its late answers are ignored.
+    adopt(null);
     setDetail(null);
+    setForm(null);
+    setStory(null);
+    setToast('');
+    setSearch('');
+    setFilter('all');
+    stopSpeaking();
     location.hash = 'overview';
   }
-  function navigate(v: View) {
+  /**
+   * Presenter control: puts the demo workspace back to its starting story. The server
+   * checks admin, CSRF and demo mode; this only runs after an in-page confirmation.
+   */
+  async function resetDemo() {
+    const current = latestSession.current;
+    if (!current) return;
+    await request<{ ok: true; revision: number }>('/demo/reset', { method: 'POST' });
+    // Work from the old story must not be replayed into the new one.
+    forgetPendingActions();
+    await clearQueuedDeliveries(current.user.id).catch(() => undefined);
+    setForm(null);
+    setDetail(null);
+    setStory(null);
+    try {
+      adopt(await bootstrap());
+    } catch {
+      setToast('Demo data was reset. Reload the page to see the starting story.');
+      return;
+    }
+    navigate('overview');
+    setToast('Demo data reset to the starting story');
+  }
+  function navigate(v: View, listFilter = 'all') {
+    navigatedTo.current = location.hash.slice(1) === v ? null : v;
     location.hash = v;
     setView(v);
     setSearch('');
-    setFilter('all');
+    setFilter(listFilter);
     setMenu(false);
     setDetail(null);
   }
@@ -386,9 +484,14 @@ export default function App() {
     for (const key of ['ownerAuthorizationRef', 'creditLimitOverrideReason', 'overrideReason']) {
       if (typeof payload[key] === 'string' && !payload[key].trim()) delete payload[key];
     }
+    const gen = generation.current;
+    const stale = () =>
+      generation.current !== gen || latestSession.current?.user.id !== current.user.id;
     try {
       const result = await act(type, payload, undefined, current.state);
-      const updated = { ...current, state: result.state };
+      if (stale())
+        throw new Error('You signed out before this answer arrived. Sign in and check the record.');
+      const updated = { ...latestSession.current!, state: result.state };
       latestSession.current = updated;
       setSession(updated);
       if (quiet) return result;
@@ -410,11 +513,9 @@ export default function App() {
       if (destinations[type]) navigate(destinations[type]);
       return result;
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
+      if (error instanceof ApiError && error.status === 409 && !stale()) {
         try {
-          const refreshed = await bootstrap();
-          latestSession.current = refreshed;
-          setSession(refreshed);
+          refreshed(gen, current.user.id, await bootstrap());
         } catch {
           /* Keep entered values and the original error visible. */
         }
@@ -468,11 +569,7 @@ export default function App() {
       <BasicApp
         session={session}
         run={(type, payload) => run(type, payload, true)}
-        refresh={async () => {
-          const refreshed = await bootstrap();
-          latestSession.current = refreshed;
-          setSession(refreshed);
-        }}
+        refresh={reloadSession}
         signOut={signout}
         toOffice={canSwitchMode(session.user.role) ? () => switchMode('office') : undefined}
       />
@@ -2228,9 +2325,13 @@ export default function App() {
   async function reloadForm() {
     if (!form?.reload) throw new Error('Close and reopen this form to reload it.');
     const descriptor = form.reload;
-    const refreshed = await bootstrap();
-    latestSession.current = refreshed;
-    flushSync(() => setSession(refreshed));
+    const gen = generation.current;
+    const userId = latestSession.current?.user.id ?? '';
+    const latest = await bootstrap();
+    if (generation.current !== gen || latestSession.current?.user.id !== userId)
+      throw new Error('The session changed. Close this form and sign in again.');
+    latestSession.current = latest;
+    flushSync(() => setSession(latest));
     captureSpec.current = { active: true, spec: null };
     try {
       factories.current[descriptor.kind]?.(descriptor.id);
@@ -2250,6 +2351,8 @@ export default function App() {
         s={s}
         u={u}
         users={users}
+        cylinders={cylinders}
+        orders={orders}
         navigate={navigate}
         showDetail={setDetail}
         actions={{ createOrder, register, receiveReturn, createBatch }}
@@ -2379,6 +2482,7 @@ export default function App() {
         recall={recall}
         resolve={resolveException}
         showCylinder={(id) => setDetail({ kind: 'cylinder', id })}
+        showDetail={setDetail}
         canInspect={allowed('admin', 'quality')}
         canResolve={allowed('admin', 'operations', 'quality')}
       />
@@ -2405,6 +2509,7 @@ export default function App() {
         resetPassword={resetPassword}
         canAdmin={allowed('admin')}
         financialRead={financialRead}
+        resetDemo={u.role === 'admin' && s.settings.mode === 'demo' ? resetDemo : undefined}
       />
     ),
   };
@@ -2519,7 +2624,7 @@ export default function App() {
           </div>
         </header>
         <main className="content">
-          <OfflinePanel state={s} user={u} onSynced={async () => setSession(await bootstrap())} />
+          <OfflinePanel state={s} user={u} onSynced={reloadSession} />
           {viewContent[view]}
         </main>
       </div>
@@ -2592,6 +2697,8 @@ function Overview({
   s,
   u,
   users,
+  cylinders: cs,
+  orders: scopedOrders,
   navigate,
   showDetail,
   actions,
@@ -2599,8 +2706,10 @@ function Overview({
   s: AppState;
   u: User;
   users: User[];
-  navigate: (v: View) => void;
-  showDetail: (d: { kind: 'order' | 'cylinder'; id: string }) => void;
+  cylinders: Cylinder[];
+  orders: Order[];
+  navigate: (v: View, filter?: string) => void;
+  showDetail: (d: { kind: DetailKind; id: string }) => void;
   actions: {
     createOrder: () => void;
     register: () => void;
@@ -2608,22 +2717,14 @@ function Overview({
     createBatch: () => void;
   };
 }) {
-  const cs = s.cylinders,
-    ready = cs.filter(
-      (c) =>
-        c.custody === 'plant' &&
-        c.contents === 'full' &&
-        c.condition === 'serviceable' &&
-        c.testDue >= today() &&
-        !!c.batchId &&
-        s.batches.some((b) => b.id === c.batchId && b.status === 'released'),
-    ).length,
+  const ready = cs.filter((c) => readyToDispatch(s, c)).length,
     held = cs.filter((c) => c.custody === 'customer').length,
     plant = cs.filter((c) => c.custody === 'plant').length,
     vehicle = cs.filter((c) => c.custody === 'vehicle').length,
     supplier = cs.filter((c) => c.custody === 'supplier').length,
-    unsafe = cs.filter((c) => c.condition !== 'serviceable' || c.testDue < today()).length,
-    active = s.orders.filter((o) => ['open', 'dispatched', 'partial'].includes(o.status)),
+    // Safety attention matches the Safety page, which lists the whole fleet.
+    unsafe = s.cylinders.filter(needsSafetyReview).length,
+    active = scopedOrders.filter(activeOrder),
     due = s.cylinders.filter((c) => c.condition === 'inspection_due' || c.testDue < today()),
     openExceptions = s.exceptions.filter((e) => e.status === 'open');
   return (
@@ -2648,29 +2749,29 @@ function Overview({
             <span className="live-dot" /> FLEET POSITION
           </div>
           <div className="hero-main">
-            <div>
-              <span className="hero-number">{cs.length}</span>
+            <button className="hero-link" onClick={() => navigate('cylinders')}>
+              <span className="hero-number">{cs.length}</span>{' '}
               <span className="hero-unit">cylinders tracked</span>
-            </div>
+            </button>
             <p>Each unit has a known custodian, contents and safety status.</p>
           </div>
           <div className="hero-breakdown">
-            <div>
-              <strong>{plant}</strong>
-              <span>At plant</span>
-            </div>
-            <div>
-              <strong>{vehicle}</strong>
-              <span>On vehicle</span>
-            </div>
-            <div>
-              <strong>{held}</strong>
-              <span>With customers</span>
-            </div>
-            <div>
-              <strong>{supplier}</strong>
-              <span>With suppliers</span>
-            </div>
+            {(
+              [
+                [plant, 'At plant', 'plant'],
+                [vehicle, 'On vehicle', 'vehicle'],
+                [held, 'With customers', 'customer'],
+                [supplier, 'With suppliers', 'supplier'],
+              ] as const
+            ).map(([value, label, custody]) => (
+              <button
+                key={custody}
+                className="hero-link"
+                onClick={() => navigate('cylinders', custody)}
+              >
+                <strong>{value}</strong> <span>{label}</span>
+              </button>
+            ))}
           </div>
         </div>
         <div className="overview-stats">
@@ -2679,19 +2780,27 @@ function Overview({
             value={ready}
             detail="Released, safe, full stock"
             tone="good"
+            onClick={() => navigate('cylinders', 'ready')}
           />
           <Stat
             label="Open orders"
             value={active.length}
             detail={`${active.filter((o) => o.priority === 'urgent').length} urgent requests`}
+            onClick={() => navigate('orders', 'active')}
           />
           <Stat
             label="Safety attention"
             value={unsafe + openExceptions.length}
             detail={`${due.length} test or inspection due`}
             tone="warn"
+            onClick={() => navigate('safety')}
           />
-          <Stat label="Customer holdings" value={held} detail="Individual cylinders on rent" />
+          <Stat
+            label="Customer holdings"
+            value={held}
+            detail="Individual cylinders on rent"
+            onClick={() => navigate('cylinders', 'customer')}
+          />
         </div>
       </div>
       <div className="dashboard-grid">
@@ -2766,17 +2875,25 @@ function Overview({
                   <ArrowRight size={16} className="row-arrow" />
                 </button>
               ))}
-              {openExceptions.slice(0, 2).map((e) => (
-                <div className="stack-row" key={e.id}>
-                  <span className="row-icon attention">
-                    <WarningCircle size={18} />
-                  </span>
-                  <span className="row-primary">
-                    <strong>{display(e.type)}</strong>
-                    <small>{e.summary}</small>
-                  </span>
-                </div>
-              ))}
+              {openExceptions.slice(0, 2).map((e) => {
+                const record = exceptionRecord(s, e.entityId);
+                return (
+                  <button
+                    className="stack-row"
+                    key={e.id}
+                    onClick={() => (record ? showDetail(record) : navigate('safety'))}
+                  >
+                    <span className="row-icon attention">
+                      <WarningCircle size={18} />
+                    </span>
+                    <span className="row-primary">
+                      <strong>{display(e.type)}</strong>
+                      <small>{e.summary}</small>
+                    </span>
+                    <ArrowRight size={16} className="row-arrow" />
+                  </button>
+                );
+              })}
             </div>
           ) : (
             <Empty
@@ -2989,7 +3106,10 @@ function Cylinders({
           c.size,
           party(s, c.ownerId),
         ].some((x) => x.toLowerCase().includes(q))) &&
-      (filter === 'all' || filter === c.custody || filter === c.condition)
+      (filter === 'all' ||
+        filter === c.custody ||
+        filter === c.condition ||
+        (filter === 'ready' && readyToDispatch(s, c)))
     );
   });
   return (
@@ -3071,6 +3191,7 @@ function Cylinders({
           onChange={setFilter}
           items={[
             { value: 'all', label: 'All' },
+            { value: 'ready', label: 'Ready to dispatch' },
             { value: 'plant', label: 'At plant' },
             { value: 'vehicle', label: 'Vehicle' },
             { value: 'customer', label: 'Customer' },
@@ -3317,7 +3438,7 @@ function Orders({
 }) {
   const filtered = items.filter(
     (o) =>
-      (filter === 'all' || filter === o.status) &&
+      (filter === 'all' || filter === o.status || (filter === 'active' && activeOrder(o))) &&
       [o.number, party(s, o.partyId), o.vehicle, o.gas].some((x) =>
         x.toLowerCase().includes(search.toLowerCase()),
       ),
@@ -3387,6 +3508,7 @@ function Orders({
           onChange={setFilter}
           items={[
             'all',
+            'active',
             'open',
             'dispatched',
             'partial',
@@ -3973,6 +4095,7 @@ function Safety({
   recall,
   resolve,
   showCylinder,
+  showDetail,
   canInspect,
   canResolve,
 }: {
@@ -3981,10 +4104,11 @@ function Safety({
   recall: (b: Batch) => void;
   resolve: (id: string) => void;
   showCylinder: (id: string) => void;
+  showDetail: (d: { kind: DetailKind; id: string }) => void;
   canInspect: boolean;
   canResolve: boolean;
 }) {
-  const due = s.cylinders.filter((c) => c.condition !== 'serviceable' || c.testDue < today()),
+  const due = s.cylinders.filter(needsSafetyReview),
     exceptions = s.exceptions.filter((e) => e.status === 'open'),
     recalled = s.batches.filter((b) => b.status === 'recalled');
   return (
@@ -4068,11 +4192,21 @@ function Safety({
                       {datetime(e.at)} · {e.entityId}
                     </small>
                   </div>
-                  {canResolve && (
-                    <Button variant="secondary" onClick={() => resolve(e.id)}>
-                      Resolve
-                    </Button>
-                  )}
+                  <div className="row-actions">
+                    {exceptionRecord(s, e.entityId) && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => showDetail(exceptionRecord(s, e.entityId)!)}
+                      >
+                        Open record
+                      </Button>
+                    )}
+                    {canResolve && (
+                      <Button variant="secondary" onClick={() => resolve(e.id)}>
+                        Resolve
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -4093,7 +4227,12 @@ function Safety({
           {recalled.length ? (
             <div className="stack-list">
               {recalled.map((b) => (
-                <div className="stack-row" key={b.id}>
+                // Opens the batch with its affected cylinders and who received them.
+                <button
+                  className="stack-row"
+                  key={b.id}
+                  onClick={() => showDetail({ kind: 'batch', id: b.id })}
+                >
                   <span className="row-icon attention">
                     <WarningCircle size={18} />
                   </span>
@@ -4103,7 +4242,8 @@ function Safety({
                       {b.cylinderIds.length} affected cylinders · {b.gas}
                     </small>
                   </span>
-                </div>
+                  <ArrowRight size={16} className="row-arrow" />
+                </button>
               ))}
             </div>
           ) : (
@@ -4366,6 +4506,7 @@ function Settings({
   resetPassword,
   canAdmin,
   financialRead,
+  resetDemo,
 }: {
   s: AppState;
   users: User[];
@@ -4377,6 +4518,8 @@ function Settings({
   resetPassword: (u: User) => void;
   canAdmin: boolean;
   financialRead: boolean;
+  /** Only for an administrator in a demo workspace. */
+  resetDemo?: () => Promise<void>;
 }) {
   return (
     <>
@@ -4547,7 +4690,91 @@ function Settings({
           </Table>
         </Card>
       )}
+      {resetDemo && <ResetDemo reset={resetDemo} />}
     </>
+  );
+}
+
+/** Words for a failed reset; the request may also have been cut off after it was applied. */
+function resetFailure(error: unknown): string {
+  if (isUncertain(error))
+    return 'Connection lost. Could not confirm whether the demo was reset. Reload the page to check.';
+  if (error instanceof ApiError && error.status === 403)
+    return 'Only an administrator can reset the demo. Sign in again as an administrator.';
+  if (error instanceof ApiError && error.status === 404)
+    return 'Reset is available only in a demo workspace.';
+  if (error instanceof ApiError) return plainOfficeError(error.message);
+  return 'Could not reset the demo data. Try again.';
+}
+
+function ResetDemo({ reset }: { reset: () => Promise<void> }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const confirmRef = useRef<HTMLDivElement>(null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (confirming) confirmRef.current?.focus();
+  }, [confirming]);
+  useEffect(() => {
+    if (error) errorRef.current?.focus();
+  }, [error]);
+  async function run() {
+    setBusy(true);
+    setError('');
+    try {
+      await reset();
+    } catch (failure) {
+      setError(resetFailure(failure));
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card className="danger-zone">
+      <div className="section-heading">
+        <div>
+          <div className="eyebrow">Danger zone · presenter only</div>
+          <h2>Reset demo data</h2>
+        </div>
+      </div>
+      <p className="muted">
+        Puts every demo record back to the starting story. Everything done in this demo since then
+        is removed for everyone, and deliveries saved on this device are cleared. This cannot be
+        undone. Only synthetic demo data is affected.
+      </p>
+      {error && (
+        <p className="form-error" role="alert" tabIndex={-1} ref={errorRef}>
+          {error}
+        </p>
+      )}
+      {confirming ? (
+        <div
+          className="danger-confirm"
+          role="group"
+          aria-label="Confirm demo reset"
+          tabIndex={-1}
+          ref={confirmRef}
+        >
+          <p>
+            <strong>Reset the demo now?</strong> Anyone using this demo will see the starting story.
+          </p>
+          <div className="form-actions">
+            <Button variant="secondary" onClick={() => setConfirming(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={() => void run()} loading={busy}>
+              Yes, reset demo data
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button variant="danger" onClick={() => setConfirming(true)}>
+          Reset demo data
+        </Button>
+      )}
+    </Card>
   );
 }
 

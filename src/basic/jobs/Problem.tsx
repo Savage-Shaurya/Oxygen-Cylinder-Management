@@ -197,6 +197,7 @@ export default function Problem({ state, user, run, home, params }: JobProps) {
       }
       sentence={sentence}
       onUndo={() => setStep('what')}
+      onFixScan={() => setStep('scan')}
       onHome={home}
       send={async () => {
         await run('return.discrepancy', {

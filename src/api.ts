@@ -3,6 +3,8 @@ import type { ActionRequest, ActionResult, AppState, Bootstrap } from '../shared
 let csrfToken = '';
 let currentUserId = '';
 export class ApiError extends Error {
+  /** For an unconfirmed action: the exact command that was sent, to reconcile it later. */
+  envelope?: ActionRequest;
   constructor(
     message: string,
     public status: number,
@@ -10,6 +12,20 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/**
+ * True when the request may have reached the server: the connection dropped, or a gateway
+ * gave up waiting. The change may or may not have been saved, so it is neither "saved" nor
+ * "not saved" until the same command is checked again.
+ */
+export function isUncertain(error: unknown): boolean {
+  return error instanceof ApiError && [0, 502, 503, 504].includes(error.status);
+}
+
+/** The exact command an unconfirmed action sent (same key, same payload), if any. */
+export function actionEnvelope(error: unknown): ActionRequest | undefined {
+  return error instanceof ApiError && error.envelope ? structuredClone(error.envelope) : undefined;
 }
 
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -30,8 +46,9 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
       },
     );
   } catch {
+    // A dropped connection can follow a saved change, so never say it was not saved.
     throw new ApiError(
-      'Connection unavailable. Your changes have not been posted. Reconnect and try again.',
+      'Connection unavailable. Could not confirm whether this change was saved. Check before repeating it.',
       0,
     );
   }
@@ -100,12 +117,13 @@ function canonical(value: unknown): string {
     .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
     .join(',')}}`;
 }
-export async function act(
-  type: string,
-  payload: Record<string, unknown>,
-  expectedRevision?: number,
-  state?: AppState,
-): Promise<ActionResult> {
+type Identity = { idempotencyKey: string; expectedRevision?: number };
+// Unconfirmed commands of this tab, also kept in memory in case session storage is blocked.
+// Only the key and revision go to session storage; the payload stays in memory.
+const unconfirmed = new Map<string, ActionRequest>();
+const PENDING_PREFIX = 'batra-pending:';
+
+async function pendingStorageKey(userId: string, type: string, payload: unknown) {
   const digest = await crypto.subtle.digest(
     'SHA-256',
     new TextEncoder().encode(canonical({ type, payload })),
@@ -113,14 +131,69 @@ export async function act(
   const fingerprint = Array.from(new Uint8Array(digest), (x) =>
     x.toString(16).padStart(2, '0'),
   ).join('');
-  const storageKey = `batra-pending:${currentUserId}:${fingerprint}`;
-  let saved: { idempotencyKey: string; expectedRevision?: number } | undefined;
+  return `${PENDING_PREFIX}${userId}:${fingerprint}`;
+}
+function storedIdentity(storageKey: string): Identity | undefined {
+  const remembered = unconfirmed.get(storageKey);
+  if (remembered)
+    return {
+      idempotencyKey: remembered.idempotencyKey,
+      expectedRevision: remembered.expectedRevision,
+    };
   try {
-    saved = JSON.parse(sessionStorage.getItem(storageKey) || 'null') || undefined;
+    return JSON.parse(sessionStorage.getItem(storageKey) || 'null') || undefined;
   } catch {
     /* Private browsing can restrict storage. */
+    return undefined;
   }
-  const identity = saved || {
+}
+
+/**
+ * The unconfirmed command this user already sent with the same type and payload, so saving
+ * it elsewhere (the device queue) keeps the same key instead of creating a second command.
+ */
+export async function pendingAction(
+  userId: string,
+  type: string,
+  payload: Record<string, unknown>,
+): Promise<ActionRequest | undefined> {
+  if (!userId || userId !== currentUserId) return undefined;
+  const storageKey = await pendingStorageKey(userId, type, payload);
+  const remembered = unconfirmed.get(storageKey);
+  if (remembered) return structuredClone(remembered);
+  const identity = storedIdentity(storageKey);
+  if (!identity) return undefined;
+  return {
+    type,
+    payload: structuredClone(payload),
+    idempotencyKey: identity.idempotencyKey,
+    ...(identity.expectedRevision === undefined
+      ? {}
+      : { expectedRevision: identity.expectedRevision }),
+  };
+}
+
+/** Forgets every unconfirmed command, e.g. after the demo data was reset to a new story. */
+export function forgetPendingActions() {
+  unconfirmed.clear();
+  try {
+    for (let index = sessionStorage.length - 1; index >= 0; index--) {
+      const key = sessionStorage.key(index);
+      if (key?.startsWith(PENDING_PREFIX)) sessionStorage.removeItem(key);
+    }
+  } catch {
+    /* Storage unavailable. */
+  }
+}
+
+export async function act(
+  type: string,
+  payload: Record<string, unknown>,
+  expectedRevision?: number,
+  state?: AppState,
+): Promise<ActionResult> {
+  const storageKey = await pendingStorageKey(currentUserId, type, payload);
+  const identity: Identity = storedIdentity(storageKey) || {
     idempotencyKey: crypto.randomUUID(),
     expectedRevision,
   };
@@ -129,8 +202,16 @@ export async function act(
   } catch {
     /* Request remains idempotent within this attempt. */
   }
+  // One immutable envelope: every retry, queue entry and sync sends exactly this.
+  const action: ActionRequest = unconfirmed.get(storageKey) ?? {
+    type,
+    payload: structuredClone(payload),
+    idempotencyKey: identity.idempotencyKey,
+    ...(identity.expectedRevision === undefined
+      ? {}
+      : { expectedRevision: identity.expectedRevision }),
+  };
   try {
-    const action = { type, payload, ...identity };
     type Wire = ActionResult & {
       delta?: {
         baseRevision: number;
@@ -209,6 +290,7 @@ export async function act(
       }
     } else result = wire;
 
+    unconfirmed.delete(storageKey);
     try {
       sessionStorage.removeItem(storageKey);
     } catch {
@@ -218,11 +300,15 @@ export async function act(
   } catch (error) {
     // An ambiguous network/server failure retains its key so retry cannot post twice.
     if (error instanceof ApiError && error.status > 0 && error.status < 500) {
+      unconfirmed.delete(storageKey);
       try {
         sessionStorage.removeItem(storageKey);
       } catch {
         /* Storage unavailable. */
       }
+    } else if (error instanceof ApiError) {
+      unconfirmed.set(storageKey, action);
+      error.envelope = structuredClone(action);
     }
     throw error;
   }

@@ -1,4 +1,5 @@
-import { ApiError, submitAction } from './api';
+import type { ActionRequest } from '../shared/types';
+import { ApiError, pendingAction, submitAction } from './api';
 import { canRetryDelivery, validateQueuedDelivery, type QueuedDelivery } from './offline-rules';
 export type { QueuedDelivery } from './offline-rules';
 
@@ -122,37 +123,53 @@ export async function listQueuedDeliveries(userId: string): Promise<QueuedDelive
   );
   return values.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
+/**
+ * Saves delivery evidence on this device. When the delivery was already sent but not
+ * confirmed, pass that exact command (`sent`): the queue keeps its key and payload unchanged,
+ * so a sync reconciles the original instead of creating a second delivery.
+ */
 export async function queueDelivery(
   userId: string,
   payload: Record<string, unknown>,
+  sent?: ActionRequest,
 ): Promise<QueuedDelivery> {
+  // Without an explicit envelope, an unconfirmed send of this same delivery is reused.
+  const original = sent ?? (await pendingAction(userId, 'order.deliver', payload));
+  const body = original ? original.payload : payload;
+  if (original && original.type !== 'order.deliver')
+    throw new Error('Only delivery evidence may be saved on this device.');
   if (
     !userId ||
-    !payload.orderId ||
-    !Array.isArray(payload.cylinderIds) ||
-    !payload.cylinderIds.length ||
-    !String(payload.recipient || '').trim()
+    !body.orderId ||
+    !Array.isArray(body.cylinderIds) ||
+    !body.cylinderIds.length ||
+    !String(body.recipient || '').trim()
   )
     throw new Error('Select the order, accepted cylinders and recipient before saving evidence.');
   const current = await listQueuedDeliveries(userId);
+  const same = original && current.find((record) => record.id === original.idempotencyKey);
+  if (same) return same;
   if (current.length >= 50)
     throw new Error('Reconcile your saved deliveries before recording more.');
-  if (current.some((record) => record.action.payload.orderId === payload.orderId))
+  if (current.some((record) => record.action.payload.orderId === body.orderId))
     throw new Error(
       'This order already has saved delivery evidence. Review it before adding another.',
     );
-  const id = crypto.randomUUID();
-  const occurredAt = new Date().toISOString();
+  const createdAt = new Date().toISOString();
+  const id = original?.idempotencyKey ?? crypto.randomUUID();
   const record: QueuedDelivery = {
     id,
     userId,
-    createdAt: occurredAt,
+    createdAt,
     status: 'pending',
-    action: {
-      type: 'order.deliver',
-      payload: { ...payload, occurredAt },
-      idempotencyKey: id,
-    },
+    // A sent command is kept exactly as sent; the server matches its key to that payload.
+    action: original
+      ? structuredClone(original)
+      : {
+          type: 'order.deliver',
+          payload: { ...payload, occurredAt: createdAt },
+          idempotencyKey: id,
+        },
   };
   try {
     await save(record);
@@ -191,13 +208,18 @@ export async function clearQueuedDeliveries(userId: string): Promise<void> {
   keys.delete(userId);
 }
 export function offlineEvidenceDocument(record: QueuedDelivery): string {
-  return JSON.stringify({
-    format: 'CTMS saved delivery evidence',
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    notice: 'Locally recorded claim; server acceptance and physical reconciliation must be verified separately.',
-    record,
-  }, null, 2);
+  return JSON.stringify(
+    {
+      format: 'CTMS saved delivery evidence',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      notice:
+        'Locally recorded claim; server acceptance and physical reconciliation must be verified separately.',
+      record,
+    },
+    null,
+    2,
+  );
 }
 let synchronizing = false;
 export async function syncQueuedDeliveries(

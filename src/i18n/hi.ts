@@ -195,6 +195,20 @@ const hi: Record<keyof typeof en, string> = {
 
   'result.saving': '{n} में सेव होगा',
   'result.sending': 'सेव हो रहा है',
+  'result.unsure': 'पता नहीं सेव हुआ या नहीं। इसकी जाँच होगी।',
+  'result.unsureQueued': 'यह इसी रिकॉर्ड के साथ फ़ोन में रखा है। नेटवर्क आने पर जाँच होगी।',
+  'result.unsureStay': 'इसे दोबारा न करें। नेटवर्क आने पर "अभी जाँचें" दबाएँ।',
+  'result.checkNow': 'अभी जाँचें',
+  'result.checking': 'जाँच हो रही है',
+  'result.leaveSends': 'यह स्क्रीन छोड़ते ही यह भेज दिया जाएगा।',
+  'result.leftSaved': 'स्क्रीन छोड़ते ही भेज दिया। सेव हो गया: {sentence}',
+  'result.leftUnsure':
+    'स्क्रीन छोड़ते ही भेज दिया। पता नहीं सेव हुआ या नहीं। दोबारा न करें, ऑफ़िस से जाँच कराएँ।',
+  'result.leftUnsureQueued':
+    'स्क्रीन छोड़ते ही भेज दिया। पता नहीं सेव हुआ या नहीं। यह फ़ोन में रखा है, इसकी जाँच होगी।',
+  'result.leftFailed': 'स्क्रीन छोड़ते ही भेजा, पर सेव नहीं हुआ। {reason}',
+  'result.backToScan': 'वापस स्कैन करें',
+  'offline.review': 'फ़ोन में रखी डिलीवरी',
   'error.offline': 'नेटवर्क नहीं है। फिर से करें।',
   'error.changed': 'कुछ बदल गया है। फिर से देखें।',
   'error.notAllowed': 'इजाज़त नहीं है। ऑफ़िस से पूछें।',

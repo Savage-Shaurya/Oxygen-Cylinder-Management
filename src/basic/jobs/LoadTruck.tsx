@@ -195,7 +195,22 @@ export default function LoadTruck({ state, user, users, run, home }: JobProps) {
       }
       sentence={sentence}
       onUndo={() => setStep('driver')}
-      onFixScan={() => setStep('scan')}
+      onFixScan={() => {
+        // Keep only cylinders that can still go on this order; pick another order if it left.
+        const still = state.orders.find((o) => o.id === order.id);
+        if (!still || !orders.some((o) => o.id === order.id)) {
+          scans.set([]);
+          setStep('which');
+          return;
+        }
+        scans.set(
+          scans.ids.filter((id) => {
+            const c = state.cylinders.find((x) => x.id === id);
+            return !!c && dispatchProblem(state, still, c) === null;
+          }),
+        );
+        setStep('scan');
+      }}
       onHome={home}
       send={async () => {
         await run('order.dispatch', {
