@@ -12,7 +12,7 @@ import type {
   RentalInterval,
   Role,
 } from '../shared/types.js';
-import { availableCredit, creditNoteAvailable, depositBalance, invoiceOutstanding } from '../shared/finance.js';
+import { creditNoteAvailable, invoiceOutstanding } from '../shared/finance.js';
 
 export class DomainError extends Error {
   constructor(
@@ -115,10 +115,31 @@ const schemas: Record<string, z.ZodTypeAny> = {
       notes: txt(500),
     })
     .strict(),
-  'rental.stopIncident': z.object({ cylinderId: txt(100), version: z.number().int().nonnegative(), stopDate: date, reason: txt(500) }).strict(),
-  'cylinder.writeoff': z.object({ cylinderId: txt(100), version: z.number().int().nonnegative(), stopDate: date, reason: txt(500), ownerAuthorizationRef: txt(200).optional() }).strict(),
+  'rental.stopIncident': z
+    .object({
+      cylinderId: txt(100),
+      version: z.number().int().nonnegative(),
+      stopDate: date,
+      reason: txt(500),
+    })
+    .strict(),
+  'cylinder.writeoff': z
+    .object({
+      cylinderId: txt(100),
+      version: z.number().int().nonnegative(),
+      stopDate: date,
+      reason: txt(500),
+      ownerAuthorizationRef: txt(200).optional(),
+    })
+    .strict(),
   'party.create': partyFields,
-  'party.update': z.object({ partyId: txt(100), expectedVersion: z.number().int().nonnegative().optional(), ...partyFields.shape }).strict(),
+  'party.update': z
+    .object({
+      partyId: txt(100),
+      expectedVersion: z.number().int().nonnegative().optional(),
+      ...partyFields.shape,
+    })
+    .strict(),
   'order.create': z
     .object({
       partyId: txt(100),
@@ -169,7 +190,9 @@ const schemas: Record<string, z.ZodTypeAny> = {
       notes: optional(),
     })
     .strict(),
-  'collection.reverse': z.object({ pickupId: txt(100), cylinderIds: ids, reason: txt(500) }).strict(),
+  'collection.reverse': z
+    .object({ pickupId: txt(100), cylinderIds: ids, reason: txt(500) })
+    .strict(),
   'return.discrepancy': z.object({ branchId: txt(100), serial: txt(80), notes: txt(500) }).strict(),
   'order.unload': z
     .object({
@@ -277,10 +300,28 @@ const schemas: Record<string, z.ZodTypeAny> = {
       overrideReason: txt(500).optional(),
     })
     .strict(),
-  'finance.credit': z.object({ invoiceId: txt(100), amountPaise: positiveMoney.optional(), reason: txt(500) }).strict(),
-  'finance.creditAllocate': z.object({ creditInvoiceId: txt(100), invoiceId: txt(100), amountPaise: positiveMoney, reason: txt(500) }).strict(),
+  'finance.credit': z
+    .object({ invoiceId: txt(100), amountPaise: positiveMoney.optional(), reason: txt(500) })
+    .strict(),
+  'finance.creditAllocate': z
+    .object({
+      creditInvoiceId: txt(100),
+      invoiceId: txt(100),
+      amountPaise: positiveMoney,
+      reason: txt(500),
+    })
+    .strict(),
   'finance.creditUnallocate': z.object({ receiptId: txt(100), reason: txt(500) }).strict(),
-  'finance.creditRefund': z.object({ partyId: txt(100), creditInvoiceId: txt(100), amountPaise: positiveMoney, method: z.enum(['cash','upi','bank']), reference: txt(100), reason: txt(500) }).strict(),
+  'finance.creditRefund': z
+    .object({
+      partyId: txt(100),
+      creditInvoiceId: txt(100),
+      amountPaise: positiveMoney,
+      method: z.enum(['cash', 'upi', 'bank']),
+      reference: txt(100),
+      reason: txt(500),
+    })
+    .strict(),
   'exception.resolve': z.object({ exceptionId: txt(100), resolution: txt(500) }).strict(),
   'settings.update': z
     .object({
@@ -288,7 +329,7 @@ const schemas: Record<string, z.ZodTypeAny> = {
       address: txt(300),
       gstin: z.string().trim().max(20),
       defaultTaxBps: z.number().int().min(0).max(10000),
-      supplierOwnedRental: z.enum(['charge','no_charge']).optional(),
+      supplierOwnedRental: z.enum(['charge', 'no_charge']).optional(),
       expectedVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
@@ -350,13 +391,40 @@ function fiscalYear(ctx: ActionContext) {
 }
 function nextNumber(existing: string[], prefix: string, ctx: ActionContext) {
   const stem = `${prefix}-${fiscalYear(ctx)}-`;
-  const max = existing.filter(n => n.startsWith(stem)).reduce((m,n) => Math.max(m, Number(n.slice(stem.length)) || 0), 0);
-  return `${stem}${String(max + 1).padStart(5,'0')}`;
+  const max = existing
+    .filter((n) => n.startsWith(stem))
+    .reduce((m, n) => Math.max(m, Number(n.slice(stem.length)) || 0), 0);
+  return `${stem}${String(max + 1).padStart(5, '0')}`;
 }
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+// Upper bound for any single amount or running balance: 2^52 paise. Adding two bounded
+// values can never pass 2^53, so every step-by-step checked sum stays exact.
+const MAX_MONEY_PAISE = 2 ** 52;
 function checked(n: number): number {
-  if (!Number.isSafeInteger(n) || n < 0) fail('Money amount is out of range');
+  if (!Number.isSafeInteger(n) || n < 0 || n > MAX_MONEY_PAISE)
+    fail('Money amount is out of range');
   return n;
+}
+function depositHeld(state: AppState, partyId: string): number {
+  let total = 0n;
+  for (const r of state.receipts) {
+    if (r.partyId !== partyId) continue;
+    if (r.kind === 'deposit') total += BigInt(r.amountPaise);
+    else if (r.kind === 'refund') total -= BigInt(r.amountPaise);
+  }
+  if (total < 0n || total > BigInt(MAX_MONEY_PAISE)) fail('Deposit balance is out of range');
+  return Number(total);
+}
+function customerCreditHeld(state: AppState, partyId: string): bigint {
+  return state.invoices
+    .filter((i) => i.partyId === partyId && i.type === 'credit')
+    .reduce((n, i) => n + BigInt(creditNoteAvailable(state, i.id)), 0n);
+}
+// Retirement is permanent: a writeoff mark keeps a cylinder retired even if its condition was
+// later changed by older code. Recovery needs a separate, explicitly authorized policy.
+const isRetired = (c: Cylinder) => c.condition === 'retired' || !!c.writtenOffAt;
+function notRetired(c: Cylinder) {
+  if (isRetired(c)) fail(`Cylinder ${c.serial} is retired or written off and cannot be used`);
 }
 function tax(subtotal: number, bps: number) {
   const amount = (BigInt(checked(subtotal)) * BigInt(bps) + 5000n) / 10000n;
@@ -496,7 +564,11 @@ function invoice(
   if (!party) return fail('Invoice customer not found', 404);
   const i: Invoice = {
     id: ctx.id(),
-    number: nextNumber(state.invoices.map(x => x.number), p.type === 'credit' ? 'CN' : p.type === 'rental' ? 'RINV' : 'GINV', ctx),
+    number: nextNumber(
+      state.invoices.map((x) => x.number),
+      p.type === 'credit' ? 'CN' : p.type === 'rental' ? 'RINV' : 'GINV',
+      ctx,
+    ),
     issuedAt: ctx.now,
     subtotalPaise: subtotal,
     taxPaise,
@@ -545,7 +617,19 @@ function addReceipt(
   receiptReference(state, p.partyId, p.method, p.reference);
   const r = {
     id: ctx.id(),
-    number: nextNumber(state.receipts.map(x => x.number), p.kind === 'deposit' ? 'DEP' : p.kind === 'refund' ? 'DREF' : p.kind === 'credit_refund' ? 'CREF' : p.kind === 'credit_allocation' ? 'CALLOC' : 'RCPT', ctx),
+    number: nextNumber(
+      state.receipts.map((x) => x.number),
+      p.kind === 'deposit'
+        ? 'DEP'
+        : p.kind === 'refund'
+          ? 'DREF'
+          : p.kind === 'credit_refund'
+            ? 'CREF'
+            : p.kind === 'credit_allocation'
+              ? 'CALLOC'
+              : 'RCPT',
+      ctx,
+    ),
     at: ctx.now,
     actorId: ctx.user.id,
     ...p,
@@ -583,11 +667,17 @@ function partyHasHistory(state: AppState, partyId: string) {
     state.exceptions.some((e) => e.entityId === partyId)
   );
 }
-function stopIncidentRent(state: AppState, ctx: ActionContext, c: Cylinder, stopDate: string, allowStopped = false) {
+function stopIncidentRent(
+  state: AppState,
+  ctx: ActionContext,
+  c: Cylinder,
+  stopDate: string,
+  allowStopped = false,
+) {
   if (!c.offsiteIncident) fail('Offsite incident required');
   if (stopDate > today(ctx)) fail('Stop date cannot be in the future');
-  const active = state.rentals.filter(r => r.cylinderId === c.id && !r.end);
-  const stopped = state.rentals.find(r => r.cylinderId === c.id && r.end === stopDate);
+  const active = state.rentals.filter((r) => r.cylinderId === c.id && !r.end);
+  const stopped = state.rentals.find((r) => r.cylinderId === c.id && r.end === stopDate);
   if (allowStopped && active.length === 0 && stopped) return;
   if (active.length === 0 && c.offsiteIncident) {
     const earlier = state.rentals.filter((r) => r.cylinderId === c.id && r.end).at(-1)?.end;
@@ -596,16 +686,34 @@ function stopIncidentRent(state: AppState, ctx: ActionContext, c: Cylinder, stop
   if (active.length !== 1) fail('Active rental missing');
   const r = active[0];
   if (stopDate < r.start) fail('Stop date cannot precede rental start');
-  if (state.invoices.some(i => i.type === 'rental' && i.partyId === r.partyId && i.status !== 'credited' && i.sourceId.startsWith('rental:') && i.sourceId.split(':')[2] >= stopDate))
+  if (
+    state.invoices.some(
+      (i) =>
+        i.type === 'rental' &&
+        i.partyId === r.partyId &&
+        i.status !== 'credited' &&
+        i.sourceId.startsWith('rental:') &&
+        i.sourceId.split(':')[2] >= stopDate,
+    )
+  )
     fail('Stop date conflicts with already billed rental period');
   r.end = stopDate;
 }
-function enforceCreditLimit(state: AppState, ctx: ActionContext, partyId: string, newAmount: number, overrideReason?: string) {
-  const party = state.parties.find(p => p.id === partyId)!;
+function enforceCreditLimit(
+  state: AppState,
+  ctx: ActionContext,
+  partyId: string,
+  newAmount: number,
+  overrideReason?: string,
+) {
+  const party = state.parties.find((p) => p.id === partyId)!;
   if (party.creditLimitPaise <= 0) return;
-  const exposure = state.invoices.filter(i => i.partyId === partyId && i.type !== 'credit').reduce((n,i) => checked(n + invoiceOutstanding(i)), 0);
+  const exposure = state.invoices
+    .filter((i) => i.partyId === partyId && i.type !== 'credit')
+    .reduce((n, i) => checked(n + invoiceOutstanding(i)), 0);
   if (checked(exposure + newAmount) <= party.creditLimitPaise) return;
-  if (ctx.user.role !== 'admin' || !overrideReason) fail('Customer credit limit exceeded; admin override reason required');
+  if (ctx.user.role !== 'admin' || !overrideReason)
+    fail('Customer credit limit exceeded; admin override reason required');
 }
 
 export function actionPermitted(type: string, role: Role): boolean {
@@ -654,7 +762,7 @@ export function applyAction(
     case 'cylinder.inspect': {
       const c = object(s.cylinders, p.cylinderId, 'Cylinder', ctx, s);
       if (c.version !== p.version) fail('Cylinder version changed', 409);
-      if (c.condition === 'retired') fail('Retired cylinder is immutable');
+      notRetired(c);
       if (c.custody !== 'plant') fail('Cylinder must be at plant for inspection');
       const testEvidenceCount = [p.testDue, p.lastTest, p.certificate].filter(
         (value) => value !== undefined,
@@ -681,7 +789,17 @@ export function applyAction(
       if (p.condition === 'retired' && c.ownerId !== 'company' && !p.ownerAuthorizationRef)
         fail('Owner authorization reference required');
       c.condition = p.condition;
-      movement(s, ctx, c, 'inspection', `${c.custody}:${c.custodianId}`, c.id, p.ownerAuthorizationRef ? `${p.notes}; owner authorization ${p.ownerAuthorizationRef}` : p.notes);
+      movement(
+        s,
+        ctx,
+        c,
+        'inspection',
+        `${c.custody}:${c.custodianId}`,
+        c.id,
+        p.ownerAuthorizationRef
+          ? `${p.notes}; owner authorization ${p.ownerAuthorizationRef}`
+          : p.notes,
+      );
       entityId = c.id;
       message = `Cylinder ${p.condition}`;
       break;
@@ -689,7 +807,7 @@ export function applyAction(
     case 'cylinder.retag': {
       const c = object(s.cylinders, p.cylinderId, 'Cylinder', ctx, s);
       if (c.version !== p.version) fail('Cylinder version changed', 409);
-      if (c.condition === 'retired') fail('Retired cylinder is immutable');
+      notRetired(c);
       if (c.custody !== 'plant') fail('Cylinder must be at plant for retag');
       if (tagUsed(s, p.tag)) fail('Tag already exists', 409);
       c.previousTags ??= [];
@@ -703,6 +821,7 @@ export function applyAction(
     case 'cylinder.empty': {
       const c = object(s.cylinders, p.cylinderId, 'Cylinder', ctx, s);
       if (c.version !== p.version) fail('Cylinder version changed', 409);
+      notRetired(c);
       if (c.custody !== 'plant' || c.condition === 'retired')
         fail('Cylinder must be active at plant');
       // An empty cylinder still linked to a recalled batch needs this record to clear the hold.
@@ -721,6 +840,7 @@ export function applyAction(
     case 'cylinder.offsiteIncident': {
       const c = object(s.cylinders, p.cylinderId, 'Cylinder', ctx, s);
       if (c.version !== p.version) fail('Cylinder version changed', 409);
+      notRetired(c);
       const pickup =
         c.custody === 'vehicle' ? s.pickups?.find((x) => x.id === c.custodianId) : undefined;
       if (c.custody !== 'customer' && !pickup) fail('Cylinder is not held offsite');
@@ -746,8 +866,17 @@ export function applyAction(
     case 'rental.stopIncident': {
       const c = object(s.cylinders, p.cylinderId, 'Cylinder', ctx, s);
       if (c.version !== p.version) fail('Cylinder version changed', 409);
+      notRetired(c);
       stopIncidentRent(s, ctx, c, p.stopDate);
-      movement(s, ctx, c, 'rental_stop_incident', `${c.custody}:${c.custodianId}`, c.id, `${p.stopDate}: ${p.reason}`);
+      movement(
+        s,
+        ctx,
+        c,
+        'rental_stop_incident',
+        `${c.custody}:${c.custodianId}`,
+        c.id,
+        `${p.stopDate}: ${p.reason}`,
+      );
       entityId = c.id;
       message = 'Incident rental stopped by administrator';
       break;
@@ -755,14 +884,30 @@ export function applyAction(
     case 'cylinder.writeoff': {
       const c = object(s.cylinders, p.cylinderId, 'Cylinder', ctx, s);
       if (c.version !== p.version) fail('Cylinder version changed', 409);
-      if (c.offsiteIncident?.kind !== 'lost' || c.custody === 'plant' || c.condition === 'retired') fail('Unrecovered lost cylinder required');
-      if (c.ownerId !== 'company' && !p.ownerAuthorizationRef) fail('Owner authorization reference required');
+      notRetired(c);
+      if (c.offsiteIncident?.kind !== 'lost' || c.custody === 'plant' || c.condition === 'retired')
+        fail('Unrecovered lost cylinder required');
+      if (c.ownerId !== 'company' && !p.ownerAuthorizationRef)
+        fail('Owner authorization reference required');
       stopIncidentRent(s, ctx, c, p.stopDate, true);
       c.condition = 'retired';
       c.writtenOffAt = ctx.now;
-      movement(s, ctx, c, 'writeoff', `${c.custody}:${c.custodianId}`, c.id, `${p.stopDate}: ${p.reason}${p.ownerAuthorizationRef ? `; owner authorization ${p.ownerAuthorizationRef}` : ''}`);
-      const e = s.exceptions.find(x => x.entityId === c.id && x.type === 'offsite_lost' && x.status === 'open');
-      if (e) { e.status = 'resolved'; e.resolution = `Written off: ${p.reason}`; }
+      movement(
+        s,
+        ctx,
+        c,
+        'writeoff',
+        `${c.custody}:${c.custodianId}`,
+        c.id,
+        `${p.stopDate}: ${p.reason}${p.ownerAuthorizationRef ? `; owner authorization ${p.ownerAuthorizationRef}` : ''}`,
+      );
+      const e = s.exceptions.find(
+        (x) => x.entityId === c.id && x.type === 'offsite_lost' && x.status === 'open',
+      );
+      if (e) {
+        e.status = 'resolved';
+        e.resolution = `Written off: ${p.reason}`;
+      }
       entityId = c.id;
       message = 'Lost cylinder written off';
       break;
@@ -783,7 +928,8 @@ export function applyAction(
     }
     case 'party.update': {
       const x = object(s.parties, p.partyId, 'Party', ctx, s);
-      if (p.expectedVersion !== undefined && p.expectedVersion !== (x.version ?? 1)) fail('Party version changed', 409);
+      if (p.expectedVersion !== undefined && p.expectedVersion !== (x.version ?? 1))
+        fail('Party version changed', 409);
       branch(s, ctx, p.branchId);
       if (p.branchId !== x.branchId) fail('Party branch cannot change');
       if (
@@ -847,6 +993,7 @@ export function applyAction(
       if (p.cylinderIds.length !== o.quantity) fail('Manifest must match order quantity');
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         const owner = s.parties.find((party) => party.id === c.ownerId);
         if (
           c.branchId !== o.branchId ||
@@ -884,7 +1031,15 @@ export function applyAction(
       o.driverId = p.driverId;
       o.status = 'dispatched';
       for (const c of cs) {
-        movement(s, ctx, c, 'dispatch', `vehicle:${o.id}`, o.id, p.ownerAuthorizationRef ? `Owner authorization ${p.ownerAuthorizationRef}` : '');
+        movement(
+          s,
+          ctx,
+          c,
+          'dispatch',
+          `vehicle:${o.id}`,
+          o.id,
+          p.ownerAuthorizationRef ? `Owner authorization ${p.ownerAuthorizationRef}` : '',
+        );
         c.custody = 'vehicle';
         c.custodianId = o.id;
       }
@@ -916,6 +1071,7 @@ export function applyAction(
       if (elapsed < 0 || elapsed > 12 * 60 * 60 * 1000)
         fail('Delivery time must be within the past 12 hours');
       for (const c of cs) {
+        notRetired(c);
         const dispatch = s.movements.find(
           (m) => m.cylinderId === c.id && m.action === 'dispatch' && m.reference === o.id,
         );
@@ -929,6 +1085,32 @@ export function applyAction(
           s.batches.find((b) => b.id === c.batchId)?.status !== 'released'
         )
           fail('Cylinder cannot be delivered');
+        const start = istDay(occurredAt);
+        const dailyRatePaise =
+          c.ownerId === party.id ||
+          (s.parties.find((x) => x.id === c.ownerId)?.type === 'supplier' &&
+            s.settings.supplierOwnedRental === 'no_charge')
+            ? 0
+            : party.dailyRentalPaise;
+        const freeDays = c.ownerId === party.id ? 0 : party.freeDays;
+        // A late delivery must not add rent to a day that is already invoiced: that rent
+        // could never be billed (overlap rule) and would silently go missing.
+        const firstBillable = new Date(day(start) + freeDays * 86400000).toISOString().slice(0, 10);
+        const billed =
+          dailyRatePaise > 0
+            ? s.invoices.find(
+                (i) =>
+                  i.type === 'rental' &&
+                  i.partyId === party.id &&
+                  i.status !== 'credited' &&
+                  i.sourceId.startsWith('rental:') &&
+                  firstBillable <= i.sourceId.split(':')[2],
+              )
+            : undefined;
+        if (billed)
+          fail(
+            `Rent for ${start} is already invoiced (${billed.number}). Use the current time, or credit that rental invoice first.`,
+          );
         movement(s, ctx, c, 'delivery', `customer:${party.id}`, o.id, p.notes, occurredAt);
         c.custody = 'customer';
         c.custodianId = party.id;
@@ -938,9 +1120,9 @@ export function applyAction(
           cylinderId: c.id,
           partyId: party.id,
           orderId: o.id,
-          start: istDay(occurredAt),
-          dailyRatePaise: c.ownerId === party.id || (s.parties.find(x => x.id === c.ownerId)?.type === 'supplier' && s.settings.supplierOwnedRental === 'no_charge') ? 0 : party.dailyRentalPaise,
-          freeDays: c.ownerId === party.id ? 0 : party.freeDays,
+          start,
+          dailyRatePaise,
+          freeDays,
         });
       }
       o.deliveryProofs ??= [];
@@ -971,6 +1153,7 @@ export function applyAction(
       }
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (c.custody !== 'vehicle' || c.custodianId !== o.id) fail('Cylinder not on this vehicle');
         if (
           p.sealIntact &&
@@ -1015,6 +1198,7 @@ export function applyAction(
       }
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (c.branchId !== party.branchId || c.custody !== 'customer' || c.custodianId !== party.id)
           fail('Cylinder is not held by this customer');
         const active = s.rentals.filter(
@@ -1049,13 +1233,23 @@ export function applyAction(
       const party = object(s.parties, pickup.partyId, 'Party', ctx, s);
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
-        if (!pickup.cylinderIds.includes(c.id) || pickup.receivedIds.includes(c.id) || pickup.reversedIds?.includes(c.id) || c.custody !== 'vehicle' || c.custodianId !== pickup.id || c.offsiteIncident)
+        notRetired(c);
+        if (
+          !pickup.cylinderIds.includes(c.id) ||
+          pickup.receivedIds.includes(c.id) ||
+          pickup.reversedIds?.includes(c.id) ||
+          c.custody !== 'vehicle' ||
+          c.custodianId !== pickup.id ||
+          c.offsiteIncident
+        )
           fail('Cylinder is no longer on pickup vehicle');
-        if (!s.rentals.some(r => r.cylinderId === c.id && r.partyId === party.id && !r.end)) fail('Active rental missing');
+        if (!s.rentals.some((r) => r.cylinderId === c.id && r.partyId === party.id && !r.end))
+          fail('Active rental missing');
       }
       for (const c of cs) {
         movement(s, ctx, c, 'collection_reverse', `customer:${party.id}`, pickup.id, p.reason);
-        c.custody = 'customer'; c.custodianId = party.id;
+        c.custody = 'customer';
+        c.custodianId = party.id;
         pickup.reversedIds ??= [];
         pickup.reversedIds.push(c.id);
       }
@@ -1080,7 +1274,7 @@ export function applyAction(
           (x) =>
             x.branchId === p.branchId &&
             x.driverId === ctx.user.id &&
-            x.cylinderIds.some(id => !x.receivedIds.includes(id) && !x.reversedIds?.includes(id)),
+            x.cylinderIds.some((id) => !x.receivedIds.includes(id) && !x.reversedIds?.includes(id)),
         );
         if (!assignedOrder && !assignedPickup) fail('No current assigned work for branch', 403);
       }
@@ -1104,6 +1298,7 @@ export function applyAction(
       branch(s, ctx, receivingBranchId);
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         const pickup =
           c.custody === 'vehicle' ? s.pickups?.find((x) => x.id === c.custodianId) : undefined;
         const customerHeld = c.custody === 'customer' && c.custodianId === party.id;
@@ -1144,6 +1339,7 @@ export function applyAction(
       branch(s, ctx, p.branchId);
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (
           c.branchId !== p.branchId ||
           c.gas !== p.gas ||
@@ -1180,12 +1376,14 @@ export function applyAction(
     case 'batch.release': {
       const b = object(s.batches, p.batchId, 'Batch', ctx, s);
       if (b.status !== 'awaiting_release') fail('Batch is not awaiting release');
-      if (b.operator === ctx.user.id) fail(
+      if (b.operator === ctx.user.id)
+        fail(
           'You recorded this batch, so someone else must release it. Sign in as a Quality user to release it.',
           403,
         );
       const cs = cylinders(s, ctx, b.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (
           c.batchId !== b.id ||
           c.custody !== 'plant' ||
@@ -1210,6 +1408,7 @@ export function applyAction(
       if (!b.cylinderIds.includes(p.cylinderId)) fail('Cylinder is not in batch');
       if (b.cylinderIds.length === 1) fail('Cannot reject final batch member; recall batch');
       const c = object(s.cylinders, p.cylinderId, 'Cylinder', ctx, s);
+      notRetired(c);
       if (c.batchId !== b.id || c.custody !== 'plant')
         fail('Cylinder is not awaiting release at plant');
       movement(s, ctx, c, 'batch_reject', `plant:${c.branchId}`, b.id, p.reason);
@@ -1239,8 +1438,29 @@ export function applyAction(
           at: m.at,
         };
       });
-      for (const c of cylinders(s, ctx, b.cylinderIds)) {
-        if (c.condition === 'retired' || c.batchId !== b.id) continue;
+      // Batch.cylinderIds is historical membership. Only cylinders still carrying this batch
+      // hold its gas; former members stay in the recipient trace and are not looked up here.
+      const flagged: string[] = [];
+      let held = 0;
+      for (const id of b.cylinderIds) {
+        const c = s.cylinders.find((x) => x.id === id);
+        if (!c || isRetired(c) || c.batchId !== b.id) continue;
+        if (!ctx.user.branchIds.includes(c.branchId)) {
+          // Recalled-batch status already blocks release, dispatch and delivery everywhere.
+          // The other branch gets an open task to put this cylinder on hold.
+          s.exceptions.push({
+            id: ctx.id(),
+            at: ctx.now,
+            type: 'recall_branch_hold',
+            summary: `Hold ${c.serial} for recall of ${b.number}: ${p.reason}`,
+            entityId: c.id,
+            branchId: c.branchId,
+            status: 'open',
+          });
+          flagged.push(c.serial);
+          continue;
+        }
+        held++;
         c.condition = 'quarantine';
         movement(s, ctx, c, 'recall', `${c.custody}:${c.custodianId}`, b.id, p.reason);
         if (c.custody === 'customer' || c.custody === 'vehicle')
@@ -1255,7 +1475,9 @@ export function applyAction(
           });
       }
       entityId = b.id;
-      message = 'Batch recalled and stock quarantined';
+      message = flagged.length
+        ? `Batch recalled; ${held} quarantined. ${flagged.length} in another branch sent to that branch to hold: ${flagged.join(', ')}`
+        : 'Batch recalled and stock quarantined';
       break;
     }
     case 'supplier.send': {
@@ -1263,6 +1485,7 @@ export function applyAction(
       if (party.type !== 'supplier') fail('Party is not supplier');
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         const safeForFill = c.condition === 'serviceable' && dueValid(c, ctx);
         const safeForTest = ['serviceable', 'inspection_due', 'testing'].includes(c.condition);
         if (
@@ -1299,6 +1522,7 @@ export function applyAction(
       if (party.type !== 'supplier') fail('Party is not supplier');
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (
           c.branchId !== party.branchId ||
           c.custody !== 'supplier' ||
@@ -1398,7 +1622,13 @@ export function applyAction(
         unitPricePaise: p.unitPricePaise ?? o.unitPricePaise,
         amountPaise: checked(o.deliveredIds.length * (p.unitPricePaise ?? o.unitPricePaise)),
       };
-      enforceCreditLimit(s, ctx, o.partyId, checked(line.amountPaise + tax(line.amountPaise, p.taxBps)), p.creditLimitOverrideReason);
+      enforceCreditLimit(
+        s,
+        ctx,
+        o.partyId,
+        checked(line.amountPaise + tax(line.amountPaise, p.taxBps)),
+        p.creditLimitOverrideReason,
+      );
       const i = invoice(s, ctx, {
         partyId: o.partyId,
         branchId: o.branchId,
@@ -1450,8 +1680,14 @@ export function applyAction(
           });
       }
       if (!lines.length) fail('No billable rental days');
-      const subtotal = checked(sum(lines.map(l => l.amountPaise)));
-      enforceCreditLimit(s, ctx, party.id, checked(subtotal + tax(subtotal, p.taxBps)), p.creditLimitOverrideReason);
+      const subtotal = checked(sum(lines.map((l) => l.amountPaise)));
+      enforceCreditLimit(
+        s,
+        ctx,
+        party.id,
+        checked(subtotal + tax(subtotal, p.taxBps)),
+        p.creditLimitOverrideReason,
+      );
       const i = invoice(s, ctx, {
         partyId: party.id,
         branchId: party.branchId,
@@ -1487,6 +1723,8 @@ export function applyAction(
     case 'finance.deposit': {
       const party = object(s.parties, p.partyId, 'Party', ctx, s);
       if (party.type === 'supplier') fail('Supplier cannot provide customer deposit');
+      if (p.amountPaise > MAX_MONEY_PAISE - depositHeld(s, party.id))
+        fail('Deposit balance would exceed the allowed limit');
       const r = addReceipt(s, ctx, {
         partyId: party.id,
         amountPaise: p.amountPaise,
@@ -1500,11 +1738,20 @@ export function applyAction(
     }
     case 'finance.refund': {
       const party = object(s.parties, p.partyId, 'Party', ctx, s);
-      const balance = depositBalance(s, party.id);
+      const balance = depositHeld(s, party.id);
       if (p.amountPaise > balance) fail('Refund exceeds deposit balance');
-      const held = s.cylinders.some(c => (c.custody === 'customer' && c.custodianId === party.id) || (c.custody === 'vehicle' && s.pickups?.some(x => x.id === c.custodianId && x.partyId === party.id && !x.receivedIds.includes(c.id))));
-      const owed = s.invoices.some(i => i.partyId === party.id && invoiceOutstanding(i) > 0);
-      if ((held || owed) && (ctx.user.role !== 'admin' || !p.overrideReason)) fail('Held cylinders or outstanding invoices require admin override reason');
+      const held = s.cylinders.some(
+        (c) =>
+          (c.custody === 'customer' && c.custodianId === party.id) ||
+          (c.custody === 'vehicle' &&
+            s.pickups?.some(
+              (x) =>
+                x.id === c.custodianId && x.partyId === party.id && !x.receivedIds.includes(c.id),
+            )),
+      );
+      const owed = s.invoices.some((i) => i.partyId === party.id && invoiceOutstanding(i) > 0);
+      if ((held || owed) && (ctx.user.role !== 'admin' || !p.overrideReason))
+        fail('Held cylinders or outstanding invoices require admin override reason');
       const r = addReceipt(s, ctx, {
         partyId: party.id,
         amountPaise: p.amountPaise,
@@ -1519,17 +1766,28 @@ export function applyAction(
     }
     case 'finance.credit': {
       const i = object(s.invoices, p.invoiceId, 'Invoice', ctx, s);
-      if (i.type === 'credit' || i.status === 'credited')
-        fail('Invoice cannot be credited');
-      if ((i.appliedCreditPaise ?? 0) > 0) fail('Reverse allocated customer credit before correcting invoice');
+      if (i.type === 'credit' || i.status === 'credited') fail('Invoice cannot be credited');
+      if ((i.appliedCreditPaise ?? 0) > 0)
+        fail('Reverse allocated customer credit before correcting invoice');
       const amount = p.amountPaise ?? i.totalPaise - (i.creditedPaise ?? 0);
-      if (amount <= 0 || amount > i.totalPaise - (i.creditedPaise ?? 0)) fail('Credit exceeds uncorrected invoice amount');
+      if (amount <= 0 || amount > i.totalPaise - (i.creditedPaise ?? 0))
+        fail('Credit exceeds uncorrected invoice amount');
       const offset = Math.min(amount, invoiceOutstanding(i));
-      const priorTax = sum(s.invoices.filter(x => x.type === 'credit' && x.creditedInvoiceId === i.id).map(x => x.taxPaise));
-      const cumulativeTax = Number((BigInt(i.taxPaise) * BigInt((i.creditedPaise ?? 0) + amount) + BigInt(Math.floor(i.totalPaise / 2))) / BigInt(i.totalPaise));
+      const priorTax = sum(
+        s.invoices
+          .filter((x) => x.type === 'credit' && x.creditedInvoiceId === i.id)
+          .map((x) => x.taxPaise),
+      );
+      const cumulativeTax = Number(
+        (BigInt(i.taxPaise) * BigInt((i.creditedPaise ?? 0) + amount) +
+          BigInt(Math.floor(i.totalPaise / 2))) /
+          BigInt(i.totalPaise),
+      );
       const creditTax = cumulativeTax - priorTax;
       const net = amount - creditTax;
-      const lines = [{ description: `Credit: ${i.number}`, quantity: 1, unitPricePaise: net, amountPaise: net }];
+      const lines = [
+        { description: `Credit: ${i.number}`, quantity: 1, unitPricePaise: net, amountPaise: net },
+      ];
       const c = invoice(s, ctx, {
         partyId: i.partyId,
         branchId: i.branchId,
@@ -1548,7 +1806,16 @@ export function applyAction(
       c.totalPaise = amount;
       c.creditOffsetPaise = offset;
       i.creditedPaise = checked((i.creditedPaise ?? 0) + amount);
-      i.status = i.creditedPaise === i.totalPaise ? 'credited' : invoiceOutstanding(i) === 0 ? 'paid' : i.paidPaise > 0 ? 'partial' : 'issued';
+      if (customerCreditHeld(s, i.partyId) > BigInt(MAX_MONEY_PAISE))
+        fail('Customer credit would exceed the allowed limit');
+      i.status =
+        i.creditedPaise === i.totalPaise
+          ? 'credited'
+          : invoiceOutstanding(i) === 0
+            ? 'paid'
+            : i.paidPaise > 0
+              ? 'partial'
+              : 'issued';
       entityId = c.id;
       message = 'Credit note issued';
       break;
@@ -1556,25 +1823,59 @@ export function applyAction(
     case 'finance.creditAllocate': {
       const note = object(s.invoices, p.creditInvoiceId, 'Credit note', ctx, s);
       const target = object(s.invoices, p.invoiceId, 'Invoice', ctx, s);
-      if (note.type !== 'credit' || target.type === 'credit' || note.partyId !== target.partyId || note.id === target.id) fail('Credit allocation requires same customer');
-      if (p.amountPaise > creditNoteAvailable(s, note.id) || p.amountPaise > invoiceOutstanding(target)) fail('Credit allocation exceeds available balance');
-      const r = addReceipt(s, ctx, {partyId: target.partyId, invoiceId: target.id, creditInvoiceId: note.id, amountPaise: p.amountPaise, method: 'credit', reference: `${note.id}:${target.id}:${ctx.id()}`, kind: 'credit_allocation', reason: p.reason, targetCreditedPaise: target.creditedPaise ?? 0});
+      if (
+        note.type !== 'credit' ||
+        target.type === 'credit' ||
+        note.partyId !== target.partyId ||
+        note.id === target.id
+      )
+        fail('Credit allocation requires same customer');
+      if (
+        p.amountPaise > creditNoteAvailable(s, note.id) ||
+        p.amountPaise > invoiceOutstanding(target)
+      )
+        fail('Credit allocation exceeds available balance');
+      const r = addReceipt(s, ctx, {
+        partyId: target.partyId,
+        invoiceId: target.id,
+        creditInvoiceId: note.id,
+        amountPaise: p.amountPaise,
+        method: 'credit',
+        reference: `${note.id}:${target.id}:${ctx.id()}`,
+        kind: 'credit_allocation',
+        reason: p.reason,
+        targetCreditedPaise: target.creditedPaise ?? 0,
+      });
       target.appliedCreditPaise = checked((target.appliedCreditPaise ?? 0) + p.amountPaise);
       target.status = invoiceOutstanding(target) === 0 ? 'paid' : 'partial';
-      entityId = r.id; message = 'Customer credit allocated';
+      entityId = r.id;
+      message = 'Customer credit allocated';
       break;
     }
     case 'finance.creditRefund': {
       const party = object(s.parties, p.partyId, 'Party', ctx, s);
       const note = object(s.invoices, p.creditInvoiceId, 'Credit note', ctx, s);
-      if (note.type !== 'credit' || note.partyId !== party.id) fail('Credit note does not belong to customer');
-      if (p.amountPaise > creditNoteAvailable(s, note.id)) fail('Refund exceeds available customer credit');
-      const r = addReceipt(s, ctx, {partyId: party.id, creditInvoiceId: note.id, amountPaise: p.amountPaise, method: p.method, reference: p.reference, kind: 'credit_refund', reason: p.reason});
-      entityId = r.id; message = 'Customer credit refunded';
+      if (note.type !== 'credit' || note.partyId !== party.id)
+        fail('Credit note does not belong to customer');
+      if (p.amountPaise > creditNoteAvailable(s, note.id))
+        fail('Refund exceeds available customer credit');
+      const r = addReceipt(s, ctx, {
+        partyId: party.id,
+        creditInvoiceId: note.id,
+        amountPaise: p.amountPaise,
+        method: p.method,
+        reference: p.reference,
+        kind: 'credit_refund',
+        reason: p.reason,
+      });
+      entityId = r.id;
+      message = 'Customer credit refunded';
       break;
     }
     case 'finance.creditUnallocate': {
-      const original = s.receipts.find(r => r.id === p.receiptId && r.kind === 'credit_allocation') ?? fail('Credit allocation not found', 404);
+      const original =
+        s.receipts.find((r) => r.id === p.receiptId && r.kind === 'credit_allocation') ??
+        fail('Credit allocation not found', 404);
       const targetId = original.invoiceId ?? fail('Credit allocation references unavailable');
       const creditId = original.creditInvoiceId ?? fail('Credit allocation references unavailable');
       const target = object(s.invoices, targetId, 'Invoice', ctx, s);
@@ -1585,12 +1886,22 @@ export function applyAction(
       const correctedSince = (target.creditedPaise ?? 0) !== (original.targetCreditedPaise ?? 0);
       if (target.status === 'credited' || correctedSince)
         fail('Cannot reverse allocation after invoice correction', 409);
-      if ((target.appliedCreditPaise ?? 0) < original.amountPaise) fail('Credit allocation balance invalid');
+      if ((target.appliedCreditPaise ?? 0) < original.amountPaise)
+        fail('Credit allocation balance invalid');
       original.reversedAt = ctx.now;
       original.reversalReason = p.reason;
       target.appliedCreditPaise = checked((target.appliedCreditPaise ?? 0) - original.amountPaise);
-      target.status = (target.creditedPaise ?? 0) === target.totalPaise || (target.status === 'credited' && target.creditedPaise === undefined) ? 'credited' : invoiceOutstanding(target) === 0 ? 'paid' : target.paidPaise > 0 ? 'partial' : 'issued';
-      entityId = original.id; message = `Credit allocation reversed: ${p.reason}`;
+      target.status =
+        (target.creditedPaise ?? 0) === target.totalPaise ||
+        (target.status === 'credited' && target.creditedPaise === undefined)
+          ? 'credited'
+          : invoiceOutstanding(target) === 0
+            ? 'paid'
+            : target.paidPaise > 0
+              ? 'partial'
+              : 'issued';
+      entityId = original.id;
+      message = `Credit allocation reversed: ${p.reason}`;
       break;
     }
     case 'exception.resolve': {
@@ -1610,6 +1921,16 @@ export function applyAction(
         const cylinder = s.cylinders.find((c) => c.id === e.entityId);
         if (cylinder && cylinder.custody !== 'plant') fail('Cylinder is still offsite');
       }
+      if (e.type === 'recall_branch_hold') {
+        const cylinder = s.cylinders.find((c) => c.id === e.entityId);
+        if (
+          cylinder &&
+          cylinder.condition !== 'quarantine' &&
+          !isRetired(cylinder) &&
+          s.batches.find((b) => b.id === cylinder.batchId)?.status === 'recalled'
+        )
+          fail('Put the cylinder in quarantine before closing this recall task');
+      }
       e.status = 'resolved';
       e.resolution = p.resolution;
       entityId = e.id;
@@ -1617,7 +1938,8 @@ export function applyAction(
       break;
     }
     case 'settings.update': {
-      if (p.expectedVersion !== undefined && p.expectedVersion !== (s.settings.version ?? 1)) fail('Settings version changed', 409);
+      if (p.expectedVersion !== undefined && p.expectedVersion !== (s.settings.version ?? 1))
+        fail('Settings version changed', 409);
       const { expectedVersion, ...fields } = p;
       Object.assign(s.settings, fields);
       s.settings.version = (s.settings.version ?? 1) + 1;
