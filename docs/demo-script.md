@@ -171,9 +171,10 @@ hospital also has 2 empties from last week (DEMO-TAKE-1 and DEMO-TAKE-2).
    (DEMO-CLINIC-1, order DEMO-ORD-006). Cylinders still out (on the truck or at the clinic)
    go on hold, and **Safety** shows "Recover …" tasks.
    *Notice:* in one click you know which hospitals and clinics received a batch.
-   *Honest note:* the recipient list today comes from deliveries recorded with the batch
-   (the seeded ones). A delivery made live in the demo may not appear in that list yet.
-   Do not promise it does.
+   *Stronger option:* recall **DEMO-BATCH-006** instead, the batch Quality released live
+   at the start. Its recipient list then shows the delivery the audience just watched:
+   DEMO-LOAD-1 and DEMO-LOAD-2 at Demo Sanjeevani District Hospital (order DEMO-ORD-008).
+   Live deliveries are traced. `tests/demo-recall-live.test.ts` checks this.
 5. Close: "One cylinder, six people, one record. Nothing was typed twice."
 6. After the meeting: **Reset demo data** again.
 
