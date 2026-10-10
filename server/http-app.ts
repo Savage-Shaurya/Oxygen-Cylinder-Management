@@ -517,10 +517,12 @@ export function createHttpApp(store: DataStore, options: HttpAppOptions) {
     requireAuth,
     safe(async (req, res) => {
       const user = res.locals.user as StoredUser;
+      // __path is the hosting rewrite's routing parameter, never a user choice.
+      const { __path: _routing, ...query } = (req.query ?? {}) as Record<string, unknown>;
       const result = tallyExportResponse(
         scopedState(await store.getState(user.orgId), user),
         user,
-        req.query,
+        query,
       );
       res.status(result.status).set(result.headers).send(result.body);
     }),

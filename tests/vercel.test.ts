@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { bundle, normalizeEol } from '../scripts/bundle-api.js';
-import { restoreApiPath } from '../server/vercel.js';
+import { prepareVercelRequest, restoreApiPath } from '../server/vercel.js';
 
 test('committed Vercel function bundle matches the server source', async () => {
   // Line endings are ignored: a Windows checkout (core.autocrlf) has CRLF, esbuild emits LF.
@@ -35,4 +35,15 @@ test('vercel.json routes API calls to the function and sends security headers', 
   assert.match(headers['Content-Security-Policy'], /frame-ancestors 'none'/);
   assert.equal(headers['X-Frame-Options'], 'DENY');
   assert.match(headers['Strict-Transport-Security'], /max-age=\d+/);
+});
+
+test('Vercel requests lose the internal __path parameter before Express reads the query', () => {
+  // Vercel pre-fills req.query (including __path); Express must parse the cleaned URL instead.
+  const req = {
+    url: '/api?__path=export%2Ftally&from=2026-01-01',
+    query: { __path: 'export/tally', from: '2026-01-01' },
+  };
+  prepareVercelRequest(req as never);
+  assert.equal(req.url, '/api/export/tally?from=2026-01-01');
+  assert.equal(Object.hasOwn(req, 'query'), false);
 });

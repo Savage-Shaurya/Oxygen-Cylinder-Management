@@ -37015,10 +37015,11 @@ function createHttpApp(store, options) {
     requireAuth,
     safe(async (req, res) => {
       const user = res.locals.user;
+      const { __path: _routing, ...query } = req.query ?? {};
       const result = tallyExportResponse(
         scopedState(await store.getState(user.orgId), user),
         user,
-        req.query
+        query
       );
       res.status(result.status).set(result.headers).send(result.body);
     })
@@ -38642,8 +38643,12 @@ function restoreApiPath(rawUrl) {
     url.pathname = `/api/${forwarded.replace(/^\/+/, "")}`;
   return url.pathname + url.search;
 }
-async function handler(req, res) {
+function prepareVercelRequest(req) {
   req.url = restoreApiPath(req.url ?? "/");
+  if (Object.hasOwn(req, "query")) delete req.query;
+}
+async function handler(req, res) {
+  prepareVercelRequest(req);
   let app;
   try {
     appPromise ??= build();
@@ -38661,5 +38666,6 @@ async function handler(req, res) {
 }
 export {
   handler as default,
+  prepareVercelRequest,
   restoreApiPath
 };

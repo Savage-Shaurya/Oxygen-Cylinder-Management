@@ -37,8 +37,17 @@ export function restoreApiPath(rawUrl: string): string {
   return url.pathname + url.search;
 }
 
-export default async function handler(req: IncomingMessage, res: ServerResponse) {
+/**
+ * Puts the original /api/... address back and drops Vercel's pre-parsed copy of the query,
+ * so Express parses the cleaned address (without the internal __path parameter).
+ */
+export function prepareVercelRequest(req: IncomingMessage) {
   req.url = restoreApiPath(req.url ?? '/');
+  if (Object.hasOwn(req, 'query')) delete (req as { query?: unknown }).query;
+}
+
+export default async function handler(req: IncomingMessage, res: ServerResponse) {
+  prepareVercelRequest(req);
   let app: Express;
   try {
     appPromise ??= build();
