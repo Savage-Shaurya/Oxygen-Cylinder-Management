@@ -30065,7 +30065,7 @@ function isRole(value) {
   return ["admin", "operations", "quality", "finance", "driver", "auditor"].includes(String(value));
 }
 function safeUser(user) {
-  const { passwordHash: _secret, ...safe } = user;
+  const { passwordHash: _secret, authEpoch: _epoch, ...safe } = user;
   return safe;
 }
 
@@ -34119,9 +34119,6 @@ function invoiceOutstanding(invoice2) {
   if (invoice2.status === "credited" && invoice2.creditedPaise === void 0) return 0;
   return Math.max(0, invoice2.totalPaise - invoice2.paidPaise - (invoice2.creditedPaise ?? 0) - (invoice2.appliedCreditPaise ?? 0));
 }
-function depositBalance(state, partyId) {
-  return state.receipts.filter((r) => r.partyId === partyId).reduce((balance, r) => balance + (r.kind === "deposit" ? r.amountPaise : r.kind === "refund" ? -r.amountPaise : 0), 0);
-}
 function creditNoteAvailable(state, creditInvoiceId) {
   const note = state.invoices.find((i) => i.id === creditInvoiceId && i.type === "credit");
   if (!note) return 0;
@@ -34209,10 +34206,25 @@ var schemas = {
     kind: external_exports.enum(["lost", "damaged"]),
     notes: txt(500)
   }).strict(),
-  "rental.stopIncident": external_exports.object({ cylinderId: txt(100), version: external_exports.number().int().nonnegative(), stopDate: date, reason: txt(500) }).strict(),
-  "cylinder.writeoff": external_exports.object({ cylinderId: txt(100), version: external_exports.number().int().nonnegative(), stopDate: date, reason: txt(500), ownerAuthorizationRef: txt(200).optional() }).strict(),
+  "rental.stopIncident": external_exports.object({
+    cylinderId: txt(100),
+    version: external_exports.number().int().nonnegative(),
+    stopDate: date,
+    reason: txt(500)
+  }).strict(),
+  "cylinder.writeoff": external_exports.object({
+    cylinderId: txt(100),
+    version: external_exports.number().int().nonnegative(),
+    stopDate: date,
+    reason: txt(500),
+    ownerAuthorizationRef: txt(200).optional()
+  }).strict(),
   "party.create": partyFields,
-  "party.update": external_exports.object({ partyId: txt(100), expectedVersion: external_exports.number().int().nonnegative().optional(), ...partyFields.shape }).strict(),
+  "party.update": external_exports.object({
+    partyId: txt(100),
+    expectedVersion: external_exports.number().int().nonnegative().optional(),
+    ...partyFields.shape
+  }).strict(),
   "order.create": external_exports.object({
     partyId: txt(100),
     branchId: txt(100),
@@ -34337,9 +34349,21 @@ var schemas = {
     overrideReason: txt(500).optional()
   }).strict(),
   "finance.credit": external_exports.object({ invoiceId: txt(100), amountPaise: positiveMoney.optional(), reason: txt(500) }).strict(),
-  "finance.creditAllocate": external_exports.object({ creditInvoiceId: txt(100), invoiceId: txt(100), amountPaise: positiveMoney, reason: txt(500) }).strict(),
+  "finance.creditAllocate": external_exports.object({
+    creditInvoiceId: txt(100),
+    invoiceId: txt(100),
+    amountPaise: positiveMoney,
+    reason: txt(500)
+  }).strict(),
   "finance.creditUnallocate": external_exports.object({ receiptId: txt(100), reason: txt(500) }).strict(),
-  "finance.creditRefund": external_exports.object({ partyId: txt(100), creditInvoiceId: txt(100), amountPaise: positiveMoney, method: external_exports.enum(["cash", "upi", "bank"]), reference: txt(100), reason: txt(500) }).strict(),
+  "finance.creditRefund": external_exports.object({
+    partyId: txt(100),
+    creditInvoiceId: txt(100),
+    amountPaise: positiveMoney,
+    method: external_exports.enum(["cash", "upi", "bank"]),
+    reference: txt(100),
+    reason: txt(500)
+  }).strict(),
   "exception.resolve": external_exports.object({ exceptionId: txt(100), resolution: txt(500) }).strict(),
   "settings.update": external_exports.object({
     companyName: txt(120),
@@ -34409,9 +34433,28 @@ function nextNumber(existing, prefix, ctx) {
   return `${stem}${String(max + 1).padStart(5, "0")}`;
 }
 var sum = (values) => values.reduce((a, b) => a + b, 0);
+var MAX_MONEY_PAISE = 2 ** 52;
 function checked(n) {
-  if (!Number.isSafeInteger(n) || n < 0) fail("Money amount is out of range");
+  if (!Number.isSafeInteger(n) || n < 0 || n > MAX_MONEY_PAISE)
+    fail("Money amount is out of range");
   return n;
+}
+function depositHeld(state, partyId) {
+  let total = 0n;
+  for (const r of state.receipts) {
+    if (r.partyId !== partyId) continue;
+    if (r.kind === "deposit") total += BigInt(r.amountPaise);
+    else if (r.kind === "refund") total -= BigInt(r.amountPaise);
+  }
+  if (total < 0n || total > BigInt(MAX_MONEY_PAISE)) fail("Deposit balance is out of range");
+  return Number(total);
+}
+function customerCreditHeld(state, partyId) {
+  return state.invoices.filter((i) => i.partyId === partyId && i.type === "credit").reduce((n, i) => n + BigInt(creditNoteAvailable(state, i.id)), 0n);
+}
+var isRetired = (c) => c.condition === "retired" || !!c.writtenOffAt;
+function notRetired(c) {
+  if (isRetired(c)) fail(`Cylinder ${c.serial} is retired or written off and cannot be used`);
 }
 function tax(subtotal, bps) {
   const amount = (BigInt(checked(subtotal)) * BigInt(bps) + 5000n) / 10000n;
@@ -34504,7 +34547,11 @@ function invoice(state, ctx, p) {
   if (!party) return fail("Invoice customer not found", 404);
   const i = {
     id: ctx.id(),
-    number: nextNumber(state.invoices.map((x) => x.number), p.type === "credit" ? "CN" : p.type === "rental" ? "RINV" : "GINV", ctx),
+    number: nextNumber(
+      state.invoices.map((x) => x.number),
+      p.type === "credit" ? "CN" : p.type === "rental" ? "RINV" : "GINV",
+      ctx
+    ),
     issuedAt: ctx.now,
     subtotalPaise: subtotal,
     taxPaise,
@@ -34537,7 +34584,11 @@ function addReceipt(state, ctx, p) {
   receiptReference(state, p.partyId, p.method, p.reference);
   const r = {
     id: ctx.id(),
-    number: nextNumber(state.receipts.map((x) => x.number), p.kind === "deposit" ? "DEP" : p.kind === "refund" ? "DREF" : p.kind === "credit_refund" ? "CREF" : p.kind === "credit_allocation" ? "CALLOC" : "RCPT", ctx),
+    number: nextNumber(
+      state.receipts.map((x) => x.number),
+      p.kind === "deposit" ? "DEP" : p.kind === "refund" ? "DREF" : p.kind === "credit_refund" ? "CREF" : p.kind === "credit_allocation" ? "CALLOC" : "RCPT",
+      ctx
+    ),
     at: ctx.now,
     actorId: ctx.user.id,
     ...p
@@ -34566,7 +34617,9 @@ function stopIncidentRent(state, ctx, c, stopDate, allowStopped = false) {
   if (active.length !== 1) fail("Active rental missing");
   const r = active[0];
   if (stopDate < r.start) fail("Stop date cannot precede rental start");
-  if (state.invoices.some((i) => i.type === "rental" && i.partyId === r.partyId && i.status !== "credited" && i.sourceId.startsWith("rental:") && i.sourceId.split(":")[2] >= stopDate))
+  if (state.invoices.some(
+    (i) => i.type === "rental" && i.partyId === r.partyId && i.status !== "credited" && i.sourceId.startsWith("rental:") && i.sourceId.split(":")[2] >= stopDate
+  ))
     fail("Stop date conflicts with already billed rental period");
   r.end = stopDate;
 }
@@ -34575,7 +34628,8 @@ function enforceCreditLimit(state, ctx, partyId, newAmount, overrideReason) {
   if (party.creditLimitPaise <= 0) return;
   const exposure = state.invoices.filter((i) => i.partyId === partyId && i.type !== "credit").reduce((n, i) => checked(n + invoiceOutstanding(i)), 0);
   if (checked(exposure + newAmount) <= party.creditLimitPaise) return;
-  if (ctx.user.role !== "admin" || !overrideReason) fail("Customer credit limit exceeded; admin override reason required");
+  if (ctx.user.role !== "admin" || !overrideReason)
+    fail("Customer credit limit exceeded; admin override reason required");
 }
 function actionPermitted(type, role) {
   return Object.hasOwn(access, type) && access[type].includes(role);
@@ -34616,7 +34670,7 @@ function applyAction(input, request, ctx) {
     case "cylinder.inspect": {
       const c = object(s.cylinders, p.cylinderId, "Cylinder", ctx, s);
       if (c.version !== p.version) fail("Cylinder version changed", 409);
-      if (c.condition === "retired") fail("Retired cylinder is immutable");
+      notRetired(c);
       if (c.custody !== "plant") fail("Cylinder must be at plant for inspection");
       const testEvidenceCount = [p.testDue, p.lastTest, p.certificate].filter(
         (value) => value !== void 0
@@ -34639,7 +34693,15 @@ function applyAction(input, request, ctx) {
       if (p.condition === "retired" && c.ownerId !== "company" && !p.ownerAuthorizationRef)
         fail("Owner authorization reference required");
       c.condition = p.condition;
-      movement(s, ctx, c, "inspection", `${c.custody}:${c.custodianId}`, c.id, p.ownerAuthorizationRef ? `${p.notes}; owner authorization ${p.ownerAuthorizationRef}` : p.notes);
+      movement(
+        s,
+        ctx,
+        c,
+        "inspection",
+        `${c.custody}:${c.custodianId}`,
+        c.id,
+        p.ownerAuthorizationRef ? `${p.notes}; owner authorization ${p.ownerAuthorizationRef}` : p.notes
+      );
       entityId = c.id;
       message = `Cylinder ${p.condition}`;
       break;
@@ -34647,7 +34709,7 @@ function applyAction(input, request, ctx) {
     case "cylinder.retag": {
       const c = object(s.cylinders, p.cylinderId, "Cylinder", ctx, s);
       if (c.version !== p.version) fail("Cylinder version changed", 409);
-      if (c.condition === "retired") fail("Retired cylinder is immutable");
+      notRetired(c);
       if (c.custody !== "plant") fail("Cylinder must be at plant for retag");
       if (tagUsed(s, p.tag)) fail("Tag already exists", 409);
       c.previousTags ??= [];
@@ -34661,6 +34723,7 @@ function applyAction(input, request, ctx) {
     case "cylinder.empty": {
       const c = object(s.cylinders, p.cylinderId, "Cylinder", ctx, s);
       if (c.version !== p.version) fail("Cylinder version changed", 409);
+      notRetired(c);
       if (c.custody !== "plant" || c.condition === "retired")
         fail("Cylinder must be active at plant");
       const recalledLink = !!c.batchId && s.batches.find((b) => b.id === c.batchId)?.status === "recalled";
@@ -34677,6 +34740,7 @@ function applyAction(input, request, ctx) {
     case "cylinder.offsiteIncident": {
       const c = object(s.cylinders, p.cylinderId, "Cylinder", ctx, s);
       if (c.version !== p.version) fail("Cylinder version changed", 409);
+      notRetired(c);
       const pickup = c.custody === "vehicle" ? s.pickups?.find((x) => x.id === c.custodianId) : void 0;
       if (c.custody !== "customer" && !pickup) fail("Cylinder is not held offsite");
       if (c.offsiteIncident) fail("Offsite incident already recorded", 409);
@@ -34701,8 +34765,17 @@ function applyAction(input, request, ctx) {
     case "rental.stopIncident": {
       const c = object(s.cylinders, p.cylinderId, "Cylinder", ctx, s);
       if (c.version !== p.version) fail("Cylinder version changed", 409);
+      notRetired(c);
       stopIncidentRent(s, ctx, c, p.stopDate);
-      movement(s, ctx, c, "rental_stop_incident", `${c.custody}:${c.custodianId}`, c.id, `${p.stopDate}: ${p.reason}`);
+      movement(
+        s,
+        ctx,
+        c,
+        "rental_stop_incident",
+        `${c.custody}:${c.custodianId}`,
+        c.id,
+        `${p.stopDate}: ${p.reason}`
+      );
       entityId = c.id;
       message = "Incident rental stopped by administrator";
       break;
@@ -34710,13 +34783,26 @@ function applyAction(input, request, ctx) {
     case "cylinder.writeoff": {
       const c = object(s.cylinders, p.cylinderId, "Cylinder", ctx, s);
       if (c.version !== p.version) fail("Cylinder version changed", 409);
-      if (c.offsiteIncident?.kind !== "lost" || c.custody === "plant" || c.condition === "retired") fail("Unrecovered lost cylinder required");
-      if (c.ownerId !== "company" && !p.ownerAuthorizationRef) fail("Owner authorization reference required");
+      notRetired(c);
+      if (c.offsiteIncident?.kind !== "lost" || c.custody === "plant" || c.condition === "retired")
+        fail("Unrecovered lost cylinder required");
+      if (c.ownerId !== "company" && !p.ownerAuthorizationRef)
+        fail("Owner authorization reference required");
       stopIncidentRent(s, ctx, c, p.stopDate, true);
       c.condition = "retired";
       c.writtenOffAt = ctx.now;
-      movement(s, ctx, c, "writeoff", `${c.custody}:${c.custodianId}`, c.id, `${p.stopDate}: ${p.reason}${p.ownerAuthorizationRef ? `; owner authorization ${p.ownerAuthorizationRef}` : ""}`);
-      const e = s.exceptions.find((x) => x.entityId === c.id && x.type === "offsite_lost" && x.status === "open");
+      movement(
+        s,
+        ctx,
+        c,
+        "writeoff",
+        `${c.custody}:${c.custodianId}`,
+        c.id,
+        `${p.stopDate}: ${p.reason}${p.ownerAuthorizationRef ? `; owner authorization ${p.ownerAuthorizationRef}` : ""}`
+      );
+      const e = s.exceptions.find(
+        (x) => x.entityId === c.id && x.type === "offsite_lost" && x.status === "open"
+      );
       if (e) {
         e.status = "resolved";
         e.resolution = `Written off: ${p.reason}`;
@@ -34739,7 +34825,8 @@ function applyAction(input, request, ctx) {
     }
     case "party.update": {
       const x = object(s.parties, p.partyId, "Party", ctx, s);
-      if (p.expectedVersion !== void 0 && p.expectedVersion !== (x.version ?? 1)) fail("Party version changed", 409);
+      if (p.expectedVersion !== void 0 && p.expectedVersion !== (x.version ?? 1))
+        fail("Party version changed", 409);
       branch(s, ctx, p.branchId);
       if (p.branchId !== x.branchId) fail("Party branch cannot change");
       if (s.parties.some(
@@ -34795,6 +34882,7 @@ function applyAction(input, request, ctx) {
       if (p.cylinderIds.length !== o.quantity) fail("Manifest must match order quantity");
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         const owner = s.parties.find((party) => party.id === c.ownerId);
         if (c.branchId !== o.branchId || c.gas !== o.gas || c.size !== o.size || c.ownerId !== "company" && c.ownerId !== o.partyId && owner?.type !== "supplier" || c.custody !== "plant" || c.condition !== "serviceable" || c.contents !== "full" || !dueValid(c, ctx))
           fail("Cylinder is not dispatchable");
@@ -34823,7 +34911,15 @@ function applyAction(input, request, ctx) {
       o.driverId = p.driverId;
       o.status = "dispatched";
       for (const c of cs) {
-        movement(s, ctx, c, "dispatch", `vehicle:${o.id}`, o.id, p.ownerAuthorizationRef ? `Owner authorization ${p.ownerAuthorizationRef}` : "");
+        movement(
+          s,
+          ctx,
+          c,
+          "dispatch",
+          `vehicle:${o.id}`,
+          o.id,
+          p.ownerAuthorizationRef ? `Owner authorization ${p.ownerAuthorizationRef}` : ""
+        );
         c.custody = "vehicle";
         c.custodianId = o.id;
       }
@@ -34849,6 +34945,7 @@ function applyAction(input, request, ctx) {
       if (elapsed < 0 || elapsed > 12 * 60 * 60 * 1e3)
         fail("Delivery time must be within the past 12 hours");
       for (const c of cs) {
+        notRetired(c);
         const dispatch = s.movements.find(
           (m) => m.cylinderId === c.id && m.action === "dispatch" && m.reference === o.id
         );
@@ -34856,6 +34953,17 @@ function applyAction(input, request, ctx) {
           fail("Delivery cannot predate dispatch");
         if (c.custody !== "vehicle" || c.custodianId !== o.id || c.condition !== "serviceable" || !dueValid(c, ctx) || s.batches.find((b) => b.id === c.batchId)?.status !== "released")
           fail("Cylinder cannot be delivered");
+        const start = istDay(occurredAt);
+        const dailyRatePaise = c.ownerId === party.id || s.parties.find((x) => x.id === c.ownerId)?.type === "supplier" && s.settings.supplierOwnedRental === "no_charge" ? 0 : party.dailyRentalPaise;
+        const freeDays = c.ownerId === party.id ? 0 : party.freeDays;
+        const firstBillable = new Date(day(start) + freeDays * 864e5).toISOString().slice(0, 10);
+        const billed = dailyRatePaise > 0 ? s.invoices.find(
+          (i) => i.type === "rental" && i.partyId === party.id && i.status !== "credited" && i.sourceId.startsWith("rental:") && firstBillable <= i.sourceId.split(":")[2]
+        ) : void 0;
+        if (billed)
+          fail(
+            `Rent for ${start} is already invoiced (${billed.number}). Use the current time, or credit that rental invoice first.`
+          );
         movement(s, ctx, c, "delivery", `customer:${party.id}`, o.id, p.notes, occurredAt);
         c.custody = "customer";
         c.custodianId = party.id;
@@ -34865,9 +34973,9 @@ function applyAction(input, request, ctx) {
           cylinderId: c.id,
           partyId: party.id,
           orderId: o.id,
-          start: istDay(occurredAt),
-          dailyRatePaise: c.ownerId === party.id || s.parties.find((x) => x.id === c.ownerId)?.type === "supplier" && s.settings.supplierOwnedRental === "no_charge" ? 0 : party.dailyRentalPaise,
-          freeDays: c.ownerId === party.id ? 0 : party.freeDays
+          start,
+          dailyRatePaise,
+          freeDays
         });
       }
       o.deliveryProofs ??= [];
@@ -34894,6 +35002,7 @@ function applyAction(input, request, ctx) {
       }
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (c.custody !== "vehicle" || c.custodianId !== o.id) fail("Cylinder not on this vehicle");
         if (p.sealIntact && (c.contents !== "full" || c.condition !== "serviceable" || !dueValid(c, ctx) || s.batches.find((b) => b.id === c.batchId)?.status !== "released"))
           fail("Only safe released full stock can retain its seal");
@@ -34926,6 +35035,7 @@ function applyAction(input, request, ctx) {
       }
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (c.branchId !== party.branchId || c.custody !== "customer" || c.custodianId !== party.id)
           fail("Cylinder is not held by this customer");
         const active = s.rentals.filter(
@@ -34960,9 +35070,11 @@ function applyAction(input, request, ctx) {
       const party = object(s.parties, pickup.partyId, "Party", ctx, s);
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (!pickup.cylinderIds.includes(c.id) || pickup.receivedIds.includes(c.id) || pickup.reversedIds?.includes(c.id) || c.custody !== "vehicle" || c.custodianId !== pickup.id || c.offsiteIncident)
           fail("Cylinder is no longer on pickup vehicle");
-        if (!s.rentals.some((r) => r.cylinderId === c.id && r.partyId === party.id && !r.end)) fail("Active rental missing");
+        if (!s.rentals.some((r) => r.cylinderId === c.id && r.partyId === party.id && !r.end))
+          fail("Active rental missing");
       }
       for (const c of cs) {
         movement(s, ctx, c, "collection_reverse", `customer:${party.id}`, pickup.id, p.reason);
@@ -35006,6 +35118,7 @@ function applyAction(input, request, ctx) {
       branch(s, ctx, receivingBranchId);
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         const pickup = c.custody === "vehicle" ? s.pickups?.find((x) => x.id === c.custodianId) : void 0;
         const customerHeld = c.custody === "customer" && c.custodianId === party.id;
         const pickupHeld = pickup?.partyId === party.id && pickup.branchId === party.branchId && pickup.cylinderIds.includes(c.id) && !pickup.reversedIds?.includes(c.id) && !pickup.receivedIds.includes(c.id);
@@ -35040,6 +35153,7 @@ function applyAction(input, request, ctx) {
       branch(s, ctx, p.branchId);
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (c.branchId !== p.branchId || c.gas !== p.gas || c.custody !== "plant" || c.condition !== "serviceable" || c.contents !== "empty" || !dueValid(c, ctx) || c.batchId && s.batches.find((b2) => b2.id === c.batchId)?.status !== "recalled")
           fail("Cylinder cannot be filled");
       }
@@ -35068,12 +35182,14 @@ function applyAction(input, request, ctx) {
     case "batch.release": {
       const b = object(s.batches, p.batchId, "Batch", ctx, s);
       if (b.status !== "awaiting_release") fail("Batch is not awaiting release");
-      if (b.operator === ctx.user.id) fail(
-        "You recorded this batch, so someone else must release it. Sign in as a Quality user to release it.",
-        403
-      );
+      if (b.operator === ctx.user.id)
+        fail(
+          "You recorded this batch, so someone else must release it. Sign in as a Quality user to release it.",
+          403
+        );
       const cs = cylinders(s, ctx, b.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (c.batchId !== b.id || c.custody !== "plant" || c.condition !== "serviceable" || c.contents !== "full" || !dueValid(c, ctx))
           fail("Batch contains unsafe cylinder");
       }
@@ -35092,6 +35208,7 @@ function applyAction(input, request, ctx) {
       if (!b.cylinderIds.includes(p.cylinderId)) fail("Cylinder is not in batch");
       if (b.cylinderIds.length === 1) fail("Cannot reject final batch member; recall batch");
       const c = object(s.cylinders, p.cylinderId, "Cylinder", ctx, s);
+      notRetired(c);
       if (c.batchId !== b.id || c.custody !== "plant")
         fail("Cylinder is not awaiting release at plant");
       movement(s, ctx, c, "batch_reject", `plant:${c.branchId}`, b.id, p.reason);
@@ -35121,8 +35238,25 @@ function applyAction(input, request, ctx) {
           at: m.at
         };
       });
-      for (const c of cylinders(s, ctx, b.cylinderIds)) {
-        if (c.condition === "retired" || c.batchId !== b.id) continue;
+      const flagged = [];
+      let held = 0;
+      for (const id of b.cylinderIds) {
+        const c = s.cylinders.find((x) => x.id === id);
+        if (!c || isRetired(c) || c.batchId !== b.id) continue;
+        if (!ctx.user.branchIds.includes(c.branchId)) {
+          s.exceptions.push({
+            id: ctx.id(),
+            at: ctx.now,
+            type: "recall_branch_hold",
+            summary: `Hold ${c.serial} for recall of ${b.number}: ${p.reason}`,
+            entityId: c.id,
+            branchId: c.branchId,
+            status: "open"
+          });
+          flagged.push(c.serial);
+          continue;
+        }
+        held++;
         c.condition = "quarantine";
         movement(s, ctx, c, "recall", `${c.custody}:${c.custodianId}`, b.id, p.reason);
         if (c.custody === "customer" || c.custody === "vehicle")
@@ -35137,7 +35271,7 @@ function applyAction(input, request, ctx) {
           });
       }
       entityId = b.id;
-      message = "Batch recalled and stock quarantined";
+      message = flagged.length ? `Batch recalled; ${held} quarantined. ${flagged.length} in another branch sent to that branch to hold: ${flagged.join(", ")}` : "Batch recalled and stock quarantined";
       break;
     }
     case "supplier.send": {
@@ -35145,6 +35279,7 @@ function applyAction(input, request, ctx) {
       if (party.type !== "supplier") fail("Party is not supplier");
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         const safeForFill = c.condition === "serviceable" && dueValid(c, ctx);
         const safeForTest = ["serviceable", "inspection_due", "testing"].includes(c.condition);
         if (c.branchId !== party.branchId || c.custody !== "plant" || !(p.service === "test" ? safeForTest : safeForFill) || c.contents !== "empty" || c.batchId && s.batches.find((b) => b.id === c.batchId)?.status !== "recalled")
@@ -35175,6 +35310,7 @@ function applyAction(input, request, ctx) {
       if (party.type !== "supplier") fail("Party is not supplier");
       const cs = cylinders(s, ctx, p.cylinderIds);
       for (const c of cs) {
+        notRetired(c);
         if (c.branchId !== party.branchId || c.custody !== "supplier" || c.custodianId !== party.id || c.gas !== p.gas || c.condition === "retired")
           fail("Cylinder not due from supplier");
       }
@@ -35259,7 +35395,13 @@ function applyAction(input, request, ctx) {
         unitPricePaise: p.unitPricePaise ?? o.unitPricePaise,
         amountPaise: checked(o.deliveredIds.length * (p.unitPricePaise ?? o.unitPricePaise))
       };
-      enforceCreditLimit(s, ctx, o.partyId, checked(line.amountPaise + tax(line.amountPaise, p.taxBps)), p.creditLimitOverrideReason);
+      enforceCreditLimit(
+        s,
+        ctx,
+        o.partyId,
+        checked(line.amountPaise + tax(line.amountPaise, p.taxBps)),
+        p.creditLimitOverrideReason
+      );
       const i = invoice(s, ctx, {
         partyId: o.partyId,
         branchId: o.branchId,
@@ -35305,7 +35447,13 @@ function applyAction(input, request, ctx) {
       }
       if (!lines.length) fail("No billable rental days");
       const subtotal = checked(sum(lines.map((l) => l.amountPaise)));
-      enforceCreditLimit(s, ctx, party.id, checked(subtotal + tax(subtotal, p.taxBps)), p.creditLimitOverrideReason);
+      enforceCreditLimit(
+        s,
+        ctx,
+        party.id,
+        checked(subtotal + tax(subtotal, p.taxBps)),
+        p.creditLimitOverrideReason
+      );
       const i = invoice(s, ctx, {
         partyId: party.id,
         branchId: party.branchId,
@@ -35341,6 +35489,8 @@ function applyAction(input, request, ctx) {
     case "finance.deposit": {
       const party = object(s.parties, p.partyId, "Party", ctx, s);
       if (party.type === "supplier") fail("Supplier cannot provide customer deposit");
+      if (p.amountPaise > MAX_MONEY_PAISE - depositHeld(s, party.id))
+        fail("Deposit balance would exceed the allowed limit");
       const r = addReceipt(s, ctx, {
         partyId: party.id,
         amountPaise: p.amountPaise,
@@ -35354,11 +35504,16 @@ function applyAction(input, request, ctx) {
     }
     case "finance.refund": {
       const party = object(s.parties, p.partyId, "Party", ctx, s);
-      const balance = depositBalance(s, party.id);
+      const balance = depositHeld(s, party.id);
       if (p.amountPaise > balance) fail("Refund exceeds deposit balance");
-      const held = s.cylinders.some((c) => c.custody === "customer" && c.custodianId === party.id || c.custody === "vehicle" && s.pickups?.some((x) => x.id === c.custodianId && x.partyId === party.id && !x.receivedIds.includes(c.id)));
+      const held = s.cylinders.some(
+        (c) => c.custody === "customer" && c.custodianId === party.id || c.custody === "vehicle" && s.pickups?.some(
+          (x) => x.id === c.custodianId && x.partyId === party.id && !x.receivedIds.includes(c.id)
+        )
+      );
       const owed = s.invoices.some((i) => i.partyId === party.id && invoiceOutstanding(i) > 0);
-      if ((held || owed) && (ctx.user.role !== "admin" || !p.overrideReason)) fail("Held cylinders or outstanding invoices require admin override reason");
+      if ((held || owed) && (ctx.user.role !== "admin" || !p.overrideReason))
+        fail("Held cylinders or outstanding invoices require admin override reason");
       const r = addReceipt(s, ctx, {
         partyId: party.id,
         amountPaise: p.amountPaise,
@@ -35373,17 +35528,24 @@ function applyAction(input, request, ctx) {
     }
     case "finance.credit": {
       const i = object(s.invoices, p.invoiceId, "Invoice", ctx, s);
-      if (i.type === "credit" || i.status === "credited")
-        fail("Invoice cannot be credited");
-      if ((i.appliedCreditPaise ?? 0) > 0) fail("Reverse allocated customer credit before correcting invoice");
+      if (i.type === "credit" || i.status === "credited") fail("Invoice cannot be credited");
+      if ((i.appliedCreditPaise ?? 0) > 0)
+        fail("Reverse allocated customer credit before correcting invoice");
       const amount = p.amountPaise ?? i.totalPaise - (i.creditedPaise ?? 0);
-      if (amount <= 0 || amount > i.totalPaise - (i.creditedPaise ?? 0)) fail("Credit exceeds uncorrected invoice amount");
+      if (amount <= 0 || amount > i.totalPaise - (i.creditedPaise ?? 0))
+        fail("Credit exceeds uncorrected invoice amount");
       const offset = Math.min(amount, invoiceOutstanding(i));
-      const priorTax = sum(s.invoices.filter((x) => x.type === "credit" && x.creditedInvoiceId === i.id).map((x) => x.taxPaise));
-      const cumulativeTax = Number((BigInt(i.taxPaise) * BigInt((i.creditedPaise ?? 0) + amount) + BigInt(Math.floor(i.totalPaise / 2))) / BigInt(i.totalPaise));
+      const priorTax = sum(
+        s.invoices.filter((x) => x.type === "credit" && x.creditedInvoiceId === i.id).map((x) => x.taxPaise)
+      );
+      const cumulativeTax = Number(
+        (BigInt(i.taxPaise) * BigInt((i.creditedPaise ?? 0) + amount) + BigInt(Math.floor(i.totalPaise / 2))) / BigInt(i.totalPaise)
+      );
       const creditTax = cumulativeTax - priorTax;
       const net = amount - creditTax;
-      const lines = [{ description: `Credit: ${i.number}`, quantity: 1, unitPricePaise: net, amountPaise: net }];
+      const lines = [
+        { description: `Credit: ${i.number}`, quantity: 1, unitPricePaise: net, amountPaise: net }
+      ];
       const c = invoice(s, ctx, {
         partyId: i.partyId,
         branchId: i.branchId,
@@ -35402,6 +35564,8 @@ function applyAction(input, request, ctx) {
       c.totalPaise = amount;
       c.creditOffsetPaise = offset;
       i.creditedPaise = checked((i.creditedPaise ?? 0) + amount);
+      if (customerCreditHeld(s, i.partyId) > BigInt(MAX_MONEY_PAISE))
+        fail("Customer credit would exceed the allowed limit");
       i.status = i.creditedPaise === i.totalPaise ? "credited" : invoiceOutstanding(i) === 0 ? "paid" : i.paidPaise > 0 ? "partial" : "issued";
       entityId = c.id;
       message = "Credit note issued";
@@ -35410,9 +35574,21 @@ function applyAction(input, request, ctx) {
     case "finance.creditAllocate": {
       const note = object(s.invoices, p.creditInvoiceId, "Credit note", ctx, s);
       const target = object(s.invoices, p.invoiceId, "Invoice", ctx, s);
-      if (note.type !== "credit" || target.type === "credit" || note.partyId !== target.partyId || note.id === target.id) fail("Credit allocation requires same customer");
-      if (p.amountPaise > creditNoteAvailable(s, note.id) || p.amountPaise > invoiceOutstanding(target)) fail("Credit allocation exceeds available balance");
-      const r = addReceipt(s, ctx, { partyId: target.partyId, invoiceId: target.id, creditInvoiceId: note.id, amountPaise: p.amountPaise, method: "credit", reference: `${note.id}:${target.id}:${ctx.id()}`, kind: "credit_allocation", reason: p.reason, targetCreditedPaise: target.creditedPaise ?? 0 });
+      if (note.type !== "credit" || target.type === "credit" || note.partyId !== target.partyId || note.id === target.id)
+        fail("Credit allocation requires same customer");
+      if (p.amountPaise > creditNoteAvailable(s, note.id) || p.amountPaise > invoiceOutstanding(target))
+        fail("Credit allocation exceeds available balance");
+      const r = addReceipt(s, ctx, {
+        partyId: target.partyId,
+        invoiceId: target.id,
+        creditInvoiceId: note.id,
+        amountPaise: p.amountPaise,
+        method: "credit",
+        reference: `${note.id}:${target.id}:${ctx.id()}`,
+        kind: "credit_allocation",
+        reason: p.reason,
+        targetCreditedPaise: target.creditedPaise ?? 0
+      });
       target.appliedCreditPaise = checked((target.appliedCreditPaise ?? 0) + p.amountPaise);
       target.status = invoiceOutstanding(target) === 0 ? "paid" : "partial";
       entityId = r.id;
@@ -35422,9 +35598,19 @@ function applyAction(input, request, ctx) {
     case "finance.creditRefund": {
       const party = object(s.parties, p.partyId, "Party", ctx, s);
       const note = object(s.invoices, p.creditInvoiceId, "Credit note", ctx, s);
-      if (note.type !== "credit" || note.partyId !== party.id) fail("Credit note does not belong to customer");
-      if (p.amountPaise > creditNoteAvailable(s, note.id)) fail("Refund exceeds available customer credit");
-      const r = addReceipt(s, ctx, { partyId: party.id, creditInvoiceId: note.id, amountPaise: p.amountPaise, method: p.method, reference: p.reference, kind: "credit_refund", reason: p.reason });
+      if (note.type !== "credit" || note.partyId !== party.id)
+        fail("Credit note does not belong to customer");
+      if (p.amountPaise > creditNoteAvailable(s, note.id))
+        fail("Refund exceeds available customer credit");
+      const r = addReceipt(s, ctx, {
+        partyId: party.id,
+        creditInvoiceId: note.id,
+        amountPaise: p.amountPaise,
+        method: p.method,
+        reference: p.reference,
+        kind: "credit_refund",
+        reason: p.reason
+      });
       entityId = r.id;
       message = "Customer credit refunded";
       break;
@@ -35439,7 +35625,8 @@ function applyAction(input, request, ctx) {
       const correctedSince = (target.creditedPaise ?? 0) !== (original.targetCreditedPaise ?? 0);
       if (target.status === "credited" || correctedSince)
         fail("Cannot reverse allocation after invoice correction", 409);
-      if ((target.appliedCreditPaise ?? 0) < original.amountPaise) fail("Credit allocation balance invalid");
+      if ((target.appliedCreditPaise ?? 0) < original.amountPaise)
+        fail("Credit allocation balance invalid");
       original.reversedAt = ctx.now;
       original.reversalReason = p.reason;
       target.appliedCreditPaise = checked((target.appliedCreditPaise ?? 0) - original.amountPaise);
@@ -35461,6 +35648,11 @@ function applyAction(input, request, ctx) {
         const cylinder = s.cylinders.find((c) => c.id === e.entityId);
         if (cylinder && cylinder.custody !== "plant") fail("Cylinder is still offsite");
       }
+      if (e.type === "recall_branch_hold") {
+        const cylinder = s.cylinders.find((c) => c.id === e.entityId);
+        if (cylinder && cylinder.condition !== "quarantine" && !isRetired(cylinder) && s.batches.find((b) => b.id === cylinder.batchId)?.status === "recalled")
+          fail("Put the cylinder in quarantine before closing this recall task");
+      }
       e.status = "resolved";
       e.resolution = p.resolution;
       entityId = e.id;
@@ -35468,7 +35660,8 @@ function applyAction(input, request, ctx) {
       break;
     }
     case "settings.update": {
-      if (p.expectedVersion !== void 0 && p.expectedVersion !== (s.settings.version ?? 1)) fail("Settings version changed", 409);
+      if (p.expectedVersion !== void 0 && p.expectedVersion !== (s.settings.version ?? 1))
+        fail("Settings version changed", 409);
       const { expectedVersion, ...fields } = p;
       Object.assign(s.settings, fields);
       s.settings.version = (s.settings.version ?? 1) + 1;
@@ -35685,6 +35878,33 @@ function checkModeCompatibility(demoMode, userCount, demoAccountCount, stateMode
     if (stateModes.includes("demo")) throw new Error("Demo state cannot run outside demo mode");
   }
 }
+var SESSION_STALE = "Session is no longer valid; sign in again";
+function currentActor(snapshot, current, epochNow) {
+  if (!current || !current.active || current.orgId !== snapshot.orgId || snapshot.authEpoch !== void 0 && snapshot.authEpoch !== epochNow)
+    throw new StoreError(SESSION_STALE, 401);
+  return { ...current, authEpoch: epochNow };
+}
+var domainUser = (user) => safeUser(user);
+function assertCredentialCurrent(verified, current, epochNow) {
+  if (!current || !current.active || current.passwordHash !== verified.passwordHash || verified.authEpoch !== void 0 && verified.authEpoch !== epochNow)
+    throw new StoreError("Invalid email or password", 401);
+}
+function assertOrganizationAdmin(actor, state) {
+  if (actor.role !== "admin" || !state.branches.every((b) => actor.branchIds.includes(b.id)))
+    throw new StoreError("Organization administrator required", 403);
+}
+function demoResetState(demoMode, old, actor, seed) {
+  if (!demoMode || old.settings?.mode !== "demo") throw new StoreError("Not found", 404);
+  assertOrganizationAdmin(actor, old);
+  const event = managementEvent(
+    actor,
+    "demo.reset",
+    "",
+    "Demo workspace reset to the starting story"
+  );
+  const revision = Math.max(old.revision, seed.revision) + 1;
+  return { state: { ...seed, revision, audit: [event, ...seed.audit] }, event };
+}
 
 // shared/voice.ts
 var VOICE = {
@@ -35698,14 +35918,18 @@ var VOICE_LANGUAGES = { hi: "hi-IN", en: "en-IN" };
 var VOICE_MAX_TEXT = 300;
 
 // server/voice.ts
+var VOICE_PROVIDER_TIMEOUT_MS = 8e3;
 function createVoice(options) {
   const call = options.fetch ?? fetch;
   const perMinute = options.perMinute ?? 40;
+  const globalPerMinute = options.globalPerMinute ?? 120;
+  const timeoutMs = options.timeoutMs ?? VOICE_PROVIDER_TIMEOUT_MS;
   const cacheSize = options.cacheSize ?? 300;
   const cache = /* @__PURE__ */ new Map();
   const usage = /* @__PURE__ */ new Map();
+  let shared = [];
   function check(text, language) {
-    if (typeof language !== "string" || !(language in VOICE_LANGUAGES))
+    if (typeof language !== "string" || !Object.hasOwn(VOICE_LANGUAGES, language))
       throw new StoreError("Unsupported voice language", 400);
     if (typeof text !== "string") throw new StoreError("Text required", 400);
     const clean = text.replace(/\s+/g, " ").trim();
@@ -35715,32 +35939,59 @@ function createVoice(options) {
   }
   function allow(userId, now = Date.now()) {
     const recent = (usage.get(userId) ?? []).filter((at) => now - at < 6e4);
-    if (recent.length >= perMinute) throw new StoreError("Too many voice requests", 429);
+    shared = shared.filter((at) => now - at < 6e4);
+    if (recent.length >= perMinute || shared.length >= globalPerMinute)
+      throw new StoreError("Too many voice requests", 429);
     recent.push(now);
+    shared.push(now);
     usage.set(userId, recent);
+    if (usage.size > 1e4) usage.delete(usage.keys().next().value);
   }
   async function request(text, language) {
     if (!options.apiKey) throw new StoreError("Voice is not configured", 503);
-    const response = await call("https://api.sarvam.ai/text-to-speech", {
-      method: "POST",
-      headers: { "api-subscription-key": options.apiKey, "content-type": "application/json" },
-      body: JSON.stringify({
-        text,
-        language_code: VOICE_LANGUAGES[language],
-        model: VOICE.model,
-        speaker: VOICE.speaker,
-        pace: VOICE.pace,
-        speech_sample_rate: VOICE.sampleRate,
-        output_audio_codec: VOICE.codec
-      })
-    });
-    if (!response.ok) {
-      console.error("Sarvam voice failed:", response.status, (await response.text()).slice(0, 200));
-      throw new StoreError("Voice unavailable", 502);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      let response;
+      try {
+        response = await call("https://api.sarvam.ai/text-to-speech", {
+          method: "POST",
+          signal: controller.signal,
+          headers: { "api-subscription-key": options.apiKey, "content-type": "application/json" },
+          body: JSON.stringify({
+            text,
+            language_code: VOICE_LANGUAGES[language],
+            model: VOICE.model,
+            speaker: VOICE.speaker,
+            pace: VOICE.pace,
+            speech_sample_rate: VOICE.sampleRate,
+            output_audio_codec: VOICE.codec
+          })
+        });
+      } catch {
+        if (controller.signal.aborted) {
+          console.error("Sarvam voice timed out");
+          throw new StoreError("Voice unavailable", 504);
+        }
+        console.error("Sarvam voice request failed");
+        throw new StoreError("Voice unavailable", 502);
+      }
+      if (!response.ok) {
+        console.error("Sarvam voice failed with status", response.status);
+        await response.body?.cancel().catch(() => void 0);
+        throw new StoreError("Voice unavailable", 502);
+      }
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        throw new StoreError("Voice unavailable", controller.signal.aborted ? 504 : 502);
+      }
+      if (!data.audios?.length) throw new StoreError("Voice unavailable", 502);
+      return Buffer.from(data.audios.join(""), "base64");
+    } finally {
+      clearTimeout(timer);
     }
-    const data = await response.json();
-    if (!data.audios?.length) throw new StoreError("Voice unavailable", 502);
-    return Buffer.from(data.audios.join(""), "base64");
   }
   return {
     configured: () => !!options.apiKey,
@@ -35796,6 +36047,37 @@ function scopedAudit(events, state, user) {
     (e) => !e.entityId && wholeOrganization || ids2.has(e.entityId) || user.role === "admin" && state.branches.every((b) => user.branchIds.includes(b.id)) && e.action.startsWith("user.")
   );
 }
+function withoutTaxIds(order) {
+  const { challanSnapshot: snapshot, ...rest } = order;
+  return {
+    ...rest,
+    unitPricePaise: 0,
+    ...snapshot ? {
+      challanSnapshot: {
+        issuer: { ...snapshot.issuer, gstin: "" },
+        recipient: { ...snapshot.recipient, gstin: "" }
+      }
+    } : {}
+  };
+}
+function visiblePeople(users, viewer, state) {
+  const referenced = /* @__PURE__ */ new Set([viewer.id]);
+  for (const o of state.orders) {
+    referenced.add(o.driverId);
+    for (const proof of o.deliveryProofs ?? []) referenced.add(proof.actorId);
+  }
+  for (const p of state.pickups ?? []) referenced.add(p.driverId);
+  for (const b of state.batches) {
+    referenced.add(b.operator);
+    if (b.releasedBy) referenced.add(b.releasedBy);
+  }
+  for (const m of state.movements) referenced.add(m.actorId);
+  for (const r of state.receipts) referenced.add(r.actorId);
+  for (const a of state.audit) referenced.add(a.actorId);
+  return users.filter(
+    (u) => referenced.has(u.id) || u.active && u.branchIds.some((b) => viewer.branchIds.includes(b))
+  ).map((u) => ({ id: u.id, name: u.name }));
+}
 function scopedState(state, user) {
   const branches = new Set(user.branchIds);
   const cylinders2 = state.cylinders.filter((c) => branches.has(c.branchId));
@@ -35835,10 +36117,11 @@ function scopedState(state, user) {
         freeDays: 0,
         gstin: ""
       })),
-      orders: orders.map((o) => ({ ...o, unitPricePaise: 0 })),
+      orders: orders.map(withoutTaxIds),
       rentals: [],
       invoices: [],
-      receipts: []
+      receipts: [],
+      settings: { ...shared.settings, gstin: "", defaultTaxBps: 0 }
     };
   if (user.role !== "driver") return shared;
   const todayIndia = (at) => new Intl.DateTimeFormat("en-CA", {
@@ -35850,7 +36133,7 @@ function scopedState(state, user) {
   const today2 = todayIndia((/* @__PURE__ */ new Date()).toISOString());
   const ownOrders = orders.filter(
     (o) => o.driverId === user.id && (["dispatched", "partial"].includes(o.status) || o.status === "delivered" && o.deliveredAt && todayIndia(o.deliveredAt) === today2)
-  ).map((o) => ({ ...o, unitPricePaise: 0 }));
+  ).map(withoutTaxIds);
   const ownPickups = pickups.filter((p) => p.driverId === user.id).map((p) => ({ ...p, cylinderIds: p.cylinderIds.filter((id) => !p.receivedIds.includes(id)) })).filter((p) => p.cylinderIds.length > 0);
   const pendingPickupIds = new Set(ownPickups.flatMap((p) => p.cylinderIds));
   const ownPartyIds = /* @__PURE__ */ new Set([
@@ -35995,20 +36278,39 @@ function createHttpApp(store, options) {
       store.getState(user.orgId),
       store.getUsers(user.orgId)
     ]);
+    const visible = scopedState(state, user);
     return {
       user: safeUser(user),
       csrfToken,
-      state: scopedState(state, user),
+      state: visible,
       users: user.role === "admin" ? allUsers.filter((u) => u.branchIds.every((b) => user.branchIds.includes(b))).map(safeUser) : user.role === "operations" ? allUsers.filter(
         (u) => u.active && u.role === "driver" && u.branchIds.some((b) => user.branchIds.includes(b))
       ).map((u) => ({ ...safeUser(u), email: "" })) : [],
-      people: allUsers.map((u) => ({ id: u.id, name: u.name }))
+      people: visiblePeople(allUsers, user, visible)
     };
   };
   app.get(
     "/api/health",
     (_req, res) => res.json({ ok: true, mode: store.demoMode ? "demo" : "production" })
   );
+  app.get("/api/ready", async (_req, res) => {
+    let timer;
+    try {
+      await Promise.race([
+        store.ping(),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("timeout")), 5e3);
+        })
+      ]);
+      res.json({ ok: true, database: "ok" });
+    } catch (error) {
+      const code = error?.code;
+      console.error("Readiness check failed", typeof code === "string" ? code : "");
+      res.status(503).json({ ok: false, database: "unavailable" });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
   app.post(
     "/api/login",
     originGuard,
@@ -36223,6 +36525,23 @@ function createHttpApp(store, options) {
       res.json(safeUser(await store.updateUser(actor, String(req.params.id), body)));
     })
   );
+  const demoOnly = safe((_req, _res, next) => {
+    if (!store.demoMode) throw new StoreError("Not found", 404);
+    next();
+  });
+  app.post(
+    "/api/demo/reset",
+    demoOnly,
+    originGuard,
+    requireAuth,
+    csrf,
+    safe(async (_req, res) => {
+      const user = res.locals.user;
+      if (user.role !== "admin") throw new StoreError("Forbidden", 403);
+      const { revision } = await store.resetDemo(user.orgId, user);
+      res.json({ ok: true, revision });
+    })
+  );
   const voice = createVoice(options.voice ?? {});
   app.post(
     "/api/voice",
@@ -36284,8 +36603,8 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
   const before = (days) => shift(calendar, -days);
   const after = (days) => shift(calendar, days);
   const branches = [
-    { id: "b-delhi", name: "Delhi Plant & Distribution", city: "Delhi" },
-    { id: "b-faridabad", name: "Faridabad Distribution", city: "Faridabad" }
+    { id: "b-delhi", name: "Demo Delhi Plant & Godown (Okhla)", city: "Delhi" },
+    { id: "b-faridabad", name: "Demo Faridabad Distribution Godown", city: "Faridabad" }
   ];
   const parties = [
     {
@@ -36335,7 +36654,7 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
     },
     {
       id: "p-home-2",
-      name: "Demo Home Oxygen Service B",
+      name: "Demo Aarogya Home Oxygen Care",
       type: "homecare",
       contact: "Demo Service Coordinator",
       phone: "00000 01004",
@@ -36350,7 +36669,7 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
     },
     {
       id: "p-industry-1",
-      name: "Demo Precision Fabricators",
+      name: "Demo Okhla Precision Fabricators",
       type: "industrial",
       contact: "Demo Purchase Office",
       phone: "00000 01005",
@@ -36365,7 +36684,7 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
     },
     {
       id: "p-supplier-1",
-      name: "Demo Cylinder Service Works",
+      name: "Demo Hydrotest & Valve Services",
       type: "supplier",
       contact: "Demo Vendor Desk",
       phone: "00000 01006",
@@ -36380,7 +36699,7 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
     },
     {
       id: "p-supplier-2",
-      name: "Demo Filled Oxygen Supply",
+      name: "Demo Haryana Medical Gases (filled supply)",
       type: "supplier",
       contact: "Demo Vendor Desk",
       phone: "00000 01007",
@@ -36392,6 +36711,38 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
       dailyRentalPaise: 0,
       freeDays: 0,
       depositPaise: 0
+    },
+    // Demo story customers (see docs/demo-script.md). Added after the original records so
+    // existing lookups such as "first hospital" still find the same party.
+    {
+      id: "p-hospital-3",
+      name: "Demo Sanjeevani District Hospital",
+      type: "hospital",
+      contact: "Demo Medical Gas Stores",
+      phone: "00000 01008",
+      address: "Sample Hospital Road, Sarita Vihar",
+      city: "Delhi",
+      gstin: "DEMO-GST-008",
+      branchId: "b-delhi",
+      creditLimitPaise: 3e7,
+      dailyRentalPaise: 18e3,
+      freeDays: 2,
+      depositPaise: 3e5
+    },
+    {
+      id: "p-clinic-1",
+      name: "Demo Shanti Community Clinic",
+      type: "hospital",
+      contact: "Demo Clinic Manager",
+      phone: "00000 01009",
+      address: "Example Market, Jasola",
+      city: "Delhi",
+      gstin: "DEMO-GST-009",
+      branchId: "b-delhi",
+      creditLimitPaise: 8e6,
+      dailyRentalPaise: 2e4,
+      freeDays: 1,
+      depositPaise: 3e5
     }
   ];
   const cylinders2 = [];
@@ -36591,6 +36942,288 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
   const vehicle = cylinders2.find((c) => c.id === "c-004");
   vehicle.custody = "vehicle";
   vehicle.custodianId = "o-partial-1";
+  const hoursAgo = (hours) => new Date(now.getTime() - hours * 36e5).toISOString();
+  const anchorExceptions = [];
+  const anchorAudit = [];
+  const anchorMove = (c, action, from, to, at2, actor, reference, notes, beforeBatch) => movements.push({
+    id: `m-demo-${action}-${c.id}`,
+    cylinderId: c.id,
+    action,
+    from,
+    to,
+    at: at2,
+    actorId: actor,
+    actorName: actor === "u-ops" ? "Demo Operations" : actor === "u-quality" ? "Demo Quality" : "Demo Driver",
+    reference,
+    notes,
+    ...beforeBatch ? { before: { batchId: beforeBatch } } : {}
+  });
+  const anchor = (n, tag, fields = {}) => {
+    const c = {
+      id: `c-${String(n).padStart(3, "0")}`,
+      serial: `DEMO-OX-${String(n).padStart(5, "0")}`,
+      tag,
+      manufacturer: n % 2 ? "Demo Cylinder Works" : "Demo Alloy Works",
+      gas: "Medical oxygen",
+      size: "B",
+      ownerId: "company",
+      branchId: "b-delhi",
+      custody: "plant",
+      custodianId: "b-delhi",
+      condition: "serviceable",
+      contents: "full",
+      testDue: after(400 + n),
+      lastTest: before(300 + n),
+      certificate: `DEMO-TEST-${String(n).padStart(4, "0")}`,
+      version: 1,
+      createdAt: `${before(320 + n)}T09:00:00.000Z`,
+      ...fields
+    };
+    cylinders2.push(c);
+    anchorMove(c, "registered", "new", "plant:b-delhi", c.createdAt, "u-ops", c.serial, "Synthetic demonstration asset");
+    anchorMove(c, "inspection", "plant:b-delhi", "plant:b-delhi", `${before(10)}T04:00:00.000Z`, "u-quality", c.id, "Synthetic pre-fill check: serviceable");
+    return c;
+  };
+  const give1 = anchor(85, "DEMO-GIVE-1");
+  const give2 = anchor(86, "DEMO-GIVE-2");
+  const take1 = anchor(87, "DEMO-TAKE-1");
+  const take2 = anchor(88, "DEMO-TAKE-2");
+  const clinic1 = anchor(89, "DEMO-CLINIC-1");
+  const load1 = anchor(90, "DEMO-LOAD-1");
+  const load2 = anchor(91, "DEMO-LOAD-2");
+  const hold1 = anchor(92, "DEMO-HOLD-1");
+  const expired1 = anchor(93, "DEMO-EXPIRED-1", {
+    lastTest: before(1827),
+    testDue: before(2),
+    certificate: "DEMO-TEST-0093"
+  });
+  const sup1 = anchor(94, "DEMO-SUP-1", { testDue: after(5), contents: "empty" });
+  const sup2 = anchor(95, "DEMO-SUP-2", { testDue: after(5), contents: "empty" });
+  const tracedBatch = {
+    id: "batch-5",
+    number: "DEMO-BATCH-005",
+    branchId: "b-delhi",
+    gas: "Medical oxygen",
+    cylinderIds: [give1, give2, take1, take2, clinic1, expired1].map((c) => c.id),
+    source: "Demo plant fill (Tank 2)",
+    operator: "u-ops",
+    fillOperator: "Demo Shift A Operator",
+    status: "released",
+    createdAt: `${before(9)}T05:00:00.000Z`,
+    releasedAt: `${before(9)}T08:00:00.000Z`,
+    releasedBy: "u-quality",
+    certificate: "DEMO-QC-5",
+    qualityNotes: "Synthetic quality release (demo data, not a real certificate)"
+  };
+  const awaitingBatch = {
+    id: "batch-6",
+    number: "DEMO-BATCH-006",
+    branchId: "b-delhi",
+    gas: "Medical oxygen",
+    cylinderIds: [load1.id, load2.id],
+    source: "Demo plant fill (Tank 3)",
+    operator: "u-ops",
+    fillOperator: "Demo Shift A Operator",
+    status: "awaiting_release",
+    createdAt: hoursAgo(3),
+    rejectedCylinderIds: [hold1.id]
+  };
+  batches.push(tracedBatch, awaitingBatch);
+  for (const c of [give1, give2, take1, take2, clinic1, expired1]) {
+    c.batchId = tracedBatch.id;
+    anchorMove(c, "fill", "plant:b-delhi", "plant:b-delhi", tracedBatch.createdAt, "u-ops", tracedBatch.id, "Synthetic plant fill");
+  }
+  for (const c of [load1, load2, hold1]) {
+    c.batchId = awaitingBatch.id;
+    anchorMove(c, "fill", "plant:b-delhi", "plant:b-delhi", awaitingBatch.createdAt, "u-ops", awaitingBatch.id, "Synthetic plant fill");
+  }
+  const holdAt = hoursAgo(2.5);
+  anchorMove(hold1, "batch_reject", "plant:b-delhi", "plant:b-delhi", holdAt, "u-quality", awaitingBatch.id, "Valve leak suspected at seal check (synthetic)");
+  hold1.batchId = void 0;
+  hold1.condition = "quarantine";
+  hold1.contents = "unknown";
+  anchorExceptions.push(
+    {
+      id: "ex-seed-2",
+      at: holdAt,
+      type: "quality_hold",
+      summary: "DEMO-HOLD-1 on hold: valve leak suspected at seal check. Do not load until Quality clears it.",
+      entityId: hold1.id,
+      status: "open",
+      branchId: "b-delhi"
+    },
+    {
+      id: "ex-seed-3",
+      at: `${before(1)}T03:30:00.000Z`,
+      type: "test_overdue",
+      summary: "DEMO-EXPIRED-1 test date has passed. Send for hydrotest; dispatch is blocked.",
+      entityId: expired1.id,
+      status: "open",
+      branchId: "b-delhi"
+    }
+  );
+  anchorAudit.push({
+    id: "audit-demo-hold",
+    at: holdAt,
+    actorId: "u-quality",
+    actorName: "Demo Quality",
+    action: "batch.reject",
+    entityId: awaitingBatch.id,
+    summary: `${hold1.serial} rejected from ${awaitingBatch.number}: valve leak suspected`
+  });
+  for (const c of [sup1, sup2]) {
+    anchorMove(c, "supplier_send", "plant:b-delhi", "supplier:p-supplier-1", `${before(4)}T06:00:00.000Z`, "u-ops", "DEMO-SEND-001", "test: periodic hydrotest due soon");
+    c.custody = "supplier";
+    c.custodianId = "p-supplier-1";
+    c.contents = "unknown";
+    c.condition = "inspection_due";
+  }
+  anchorAudit.push({
+    id: "audit-demo-supplier-send",
+    at: `${before(4)}T06:00:00.000Z`,
+    actorId: "u-ops",
+    actorName: "Demo Operations",
+    action: "supplier.send",
+    entityId: "p-supplier-1",
+    summary: "DEMO-SEND-001: 2 cylinders sent for periodic hydrotest"
+  });
+  const routeDispatchAt = hoursAgo(2);
+  orders.push(
+    {
+      id: "o-delivered-2",
+      number: "DEMO-ORD-005",
+      partyId: "p-hospital-3",
+      branchId: "b-delhi",
+      gas: "Medical oxygen",
+      size: "B",
+      quantity: 2,
+      priority: "normal",
+      dueDate: before(8),
+      notes: "Demo ward replenishment",
+      unitPricePaise: 148e3,
+      status: "delivered",
+      cylinderIds: [take1.id, take2.id],
+      deliveredIds: [take1.id, take2.id],
+      vehicle: "DL 02 DEMO",
+      driverId: "u-driver",
+      createdAt: `${before(9)}T09:00:00.000Z`,
+      recipient: "Demo Stores Pharmacist",
+      deliveredAt: `${before(8)}T07:00:00.000Z`,
+      deliveryProofs: [
+        {
+          cylinderIds: [take1.id, take2.id],
+          recipient: "Demo Stores Pharmacist",
+          at: `${before(8)}T07:00:00.000Z`,
+          actorId: "u-driver",
+          notes: "Synthetic delivery proof"
+        }
+      ]
+    },
+    {
+      id: "o-delivered-3",
+      number: "DEMO-ORD-006",
+      partyId: "p-clinic-1",
+      branchId: "b-delhi",
+      gas: "Medical oxygen",
+      size: "B",
+      quantity: 1,
+      priority: "normal",
+      dueDate: before(7),
+      notes: "Demo clinic standby cylinder",
+      unitPricePaise: 15e4,
+      status: "delivered",
+      cylinderIds: [clinic1.id],
+      deliveredIds: [clinic1.id],
+      vehicle: "DL 02 DEMO",
+      driverId: "u-driver",
+      createdAt: `${before(8)}T11:00:00.000Z`,
+      recipient: "Demo Clinic Manager",
+      deliveredAt: `${before(7)}T06:30:00.000Z`,
+      deliveryProofs: [
+        {
+          cylinderIds: [clinic1.id],
+          recipient: "Demo Clinic Manager",
+          at: `${before(7)}T06:30:00.000Z`,
+          actorId: "u-driver",
+          notes: "Synthetic delivery proof"
+        }
+      ]
+    },
+    {
+      id: "o-route-1",
+      number: "DEMO-ORD-007",
+      partyId: "p-clinic-1",
+      branchId: "b-delhi",
+      gas: "Medical oxygen",
+      size: "B",
+      quantity: 2,
+      priority: "normal",
+      dueDate: date2,
+      notes: "Demo clinic top-up, on the truck now",
+      unitPricePaise: 15e4,
+      status: "dispatched",
+      cylinderIds: [give1.id, give2.id],
+      deliveredIds: [],
+      vehicle: "DL 02 DEMO",
+      driverId: "u-driver",
+      createdAt: `${before(1)}T10:30:00.000Z`
+    },
+    {
+      id: "o-open-3",
+      number: "DEMO-ORD-008",
+      partyId: "p-hospital-3",
+      branchId: "b-delhi",
+      gas: "Medical oxygen",
+      size: "B",
+      quantity: 2,
+      priority: "normal",
+      dueDate: date2,
+      notes: "Demo ward replenishment, 2 x size B",
+      unitPricePaise: 148e3,
+      status: "open",
+      cylinderIds: [],
+      deliveredIds: [],
+      vehicle: "",
+      driverId: "",
+      createdAt: `${before(1)}T13:00:00.000Z`
+    }
+  );
+  for (const [c, orderId, partyId] of [
+    [take1, "o-delivered-2", "p-hospital-3"],
+    [take2, "o-delivered-2", "p-hospital-3"],
+    [clinic1, "o-delivered-3", "p-clinic-1"],
+    [give1, "o-route-1", ""],
+    [give2, "o-route-1", ""]
+  ]) {
+    const order = orders.find((o) => o.id === orderId);
+    const dispatchedAt = partyId ? `${order.deliveredAt.slice(0, 10)}T04:30:00.000Z` : routeDispatchAt;
+    anchorMove(c, "dispatch", "plant:b-delhi", `vehicle:${order.id}`, dispatchedAt, "u-ops", order.id, "Synthetic route manifest");
+    c.custody = "vehicle";
+    c.custodianId = order.id;
+    if (!partyId) continue;
+    anchorMove(c, "delivery", `vehicle:${order.id}`, `customer:${partyId}`, order.deliveredAt, "u-driver", order.id, "Synthetic delivery proof", tracedBatch.id);
+    c.custody = "customer";
+    c.custodianId = partyId;
+    const party = parties.find((p) => p.id === partyId);
+    rentals.push({
+      id: `r-${c.id}`,
+      cylinderId: c.id,
+      partyId,
+      orderId,
+      start: order.deliveredAt.slice(0, 10),
+      dailyRatePaise: party.dailyRentalPaise,
+      freeDays: party.freeDays
+    });
+  }
+  anchorAudit.push({
+    id: "audit-demo-route-dispatch",
+    at: routeDispatchAt,
+    actorId: "u-ops",
+    actorName: "Demo Operations",
+    action: "order.dispatch",
+    entityId: "o-route-1",
+    summary: "DEMO-ORD-007: 2 cylinders loaded on DL 02 DEMO for the demo driver"
+  });
   for (const order of orders.filter((o) => o.cylinderIds.length)) {
     const party = parties.find((p) => p.id === order.partyId);
     order.challanSnapshot = {
@@ -36679,6 +37312,31 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
       notes: "Synthetic demonstration invoice"
     }
   ];
+  invoices.push({
+    id: "inv-seed-4",
+    number: "DEMO-INV-004",
+    partyId: "p-hospital-3",
+    branchId: "b-delhi",
+    type: "gas",
+    sourceId: "o-delivered-2",
+    issuedAt: `${before(7)}T10:00:00.000Z`,
+    dueDate: after(23),
+    lines: [
+      {
+        description: "Medical oxygen B delivery DEMO-ORD-005",
+        quantity: 2,
+        unitPricePaise: 148e3,
+        amountPaise: 296e3
+      }
+    ],
+    subtotalPaise: 296e3,
+    taxBps: 1200,
+    taxPaise: 35520,
+    totalPaise: 331520,
+    paidPaise: 1e5,
+    status: "partial",
+    notes: "Synthetic demonstration invoice"
+  });
   for (const invoice2 of invoices) {
     const party = parties.find((p) => p.id === invoice2.partyId);
     invoice2.billTo = {
@@ -36730,6 +37388,18 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
       kind: "deposit"
     }
   ];
+  receipts.push({
+    id: "receipt-seed-4",
+    number: "DEMO-RCPT-004",
+    partyId: "p-hospital-3",
+    invoiceId: "inv-seed-4",
+    amountPaise: 1e5,
+    method: "bank",
+    reference: "DEMO-UTR-004",
+    at: `${before(3)}T12:00:00.000Z`,
+    actorId: "u-finance",
+    kind: "payment"
+  });
   const audit = [
     {
       id: "audit-seed-1",
@@ -36739,7 +37409,8 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
       action: "demo.seed",
       entityId: "",
       summary: "Synthetic demonstration state created; no real customer or patient records"
-    }
+    },
+    ...anchorAudit
   ];
   for (const batch of batches) {
     audit.push({
@@ -36835,7 +37506,8 @@ function createSeedState(at = (/* @__PURE__ */ new Date()).toISOString()) {
         summary: "Demo inspection queue includes cylinders awaiting review",
         entityId: "c-047",
         status: "open"
-      }
+      },
+      ...anchorExceptions
     ]
   };
 }
@@ -36851,10 +37523,19 @@ var TABLES = [
   "login_attempts"
 ];
 var API_ROLES = ["anon", "authenticated"];
+var LOCAL_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+function isLocalDatabase(connectionString) {
+  return LOCAL_HOSTS.has(new URL(connectionString).hostname.toLowerCase());
+}
 function pgPoolConfig(options) {
   const url = new URL(options.connectionString);
-  url.searchParams.delete("sslmode");
-  const ssl = options.ssl === false ? false : options.caCert ? { ca: options.caCert, rejectUnauthorized: true } : { rejectUnauthorized: false };
+  for (const key of [...url.searchParams.keys()])
+    if (/^ssl|^uselibpqcompat$/i.test(key)) url.searchParams.delete(key);
+  if (options.ssl === false && !isLocalDatabase(options.connectionString))
+    throw new Error(
+      "Refusing an unencrypted database connection: DATABASE_SSL=disable is only allowed for a local database"
+    );
+  const ssl = options.ssl === false ? false : options.caCert ? { ca: options.caCert, rejectUnauthorized: true } : { rejectUnauthorized: true };
   return {
     connectionString: url.toString(),
     ssl,
@@ -36865,6 +37546,14 @@ function pgPoolConfig(options) {
     application_name: "cylvero"
   };
 }
+var TLS_ERRORS = /* @__PURE__ */ new Set([
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID"
+]);
 var PgStore = class _PgStore {
   constructor(pool, s, demoMode) {
     this.pool = pool;
@@ -36877,8 +37566,6 @@ var PgStore = class _PgStore {
   static async open(options) {
     const schema = options.schema ?? "cylvero";
     if (!/^[a-z_][a-z0-9_]{0,40}$/.test(schema)) throw new Error("Invalid schema name");
-    if (options.ssl !== false && !options.caCert)
-      console.warn("Database TLS is encrypted but the server certificate is not verified.");
     const pool = new esm_default.Pool(pgPoolConfig(options));
     pool.on("error", (error) => console.error("Idle database connection error", error.message));
     const store = new _PgStore(pool, schema, options.demoMode);
@@ -36886,6 +37573,11 @@ var PgStore = class _PgStore {
       await store.initialize();
     } catch (error) {
       await pool.end();
+      const code = error.code;
+      if (code && TLS_ERRORS.has(code))
+        throw new Error(
+          `Database TLS certificate could not be verified (${code}); set DATABASE_CA_CERT to the provider's CA certificate`
+        );
       throw error;
     }
     return store;
@@ -37059,37 +37751,57 @@ var PgStore = class _PgStore {
     await db.query(`DELETE FROM ${this.t("sessions")} WHERE user_id=$1`, [id]);
   }
   async getUserByEmail(email) {
-    const { rows } = await this.pool.query(`SELECT * FROM ${this.t("users")} WHERE email=$1`, [
-      email.toLowerCase()
-    ]);
-    return rows[0] && this.rowUser(rows[0]);
+    const { rows } = await this.pool.query(
+      `SELECT u.*, COALESCE(e.epoch, 0) AS auth_epoch FROM ${this.t("users")} u
+       LEFT JOIN ${this.t("user_auth_epoch")} e ON e.user_id = u.id WHERE u.email=$1`,
+      [email.toLowerCase()]
+    );
+    return rows[0] && { ...this.rowUser(rows[0]), authEpoch: Number(rows[0].auth_epoch) };
   }
   getUsers(orgId) {
     return this.users(this.pool, orgId);
   }
+  /** Issues a session only while the verified credential is still current (LS-06). The
+   * user row lock orders this against password, role and activity changes, which update that
+   * row and then delete the user's sessions in the same transaction. */
   async createSession(user, token, csrf) {
     const now = Date.now();
     await this.pool.query(
       `DELETE FROM ${this.t("sessions")} WHERE expires_at<=$1 OR last_seen_at<=$2`,
       [now, now - SESSION_IDLE_MS]
     );
-    await this.pool.query(
-      `INSERT INTO ${this.t("sessions")}(token_hash,user_id,csrf_token,expires_at,last_seen_at)
-       VALUES ($1,$2,$3,$4,$5)`,
-      [tokenHash(token), user.id, csrf, now + SESSION_TTL_MS, now]
-    );
+    await this.tx(async (db) => {
+      const { rows } = await db.query(`SELECT * FROM ${this.t("users")} WHERE id=$1 FOR UPDATE`, [
+        user.id
+      ]);
+      assertCredentialCurrent(
+        user,
+        rows[0] && this.rowUser(rows[0]),
+        await this.authEpoch(db, user.id)
+      );
+      await db.query(
+        `INSERT INTO ${this.t("sessions")}(token_hash,user_id,csrf_token,expires_at,last_seen_at)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [tokenHash(token), user.id, csrf, now + SESSION_TTL_MS, now]
+      );
+    });
   }
   async session(token) {
     const now = Date.now();
     const hashed = tokenHash(token);
     const { rows } = await this.pool.query(
-      `SELECT user_id,csrf_token FROM ${this.t("sessions")}
-       WHERE token_hash=$1 AND expires_at>$2 AND last_seen_at>$3`,
+      // The epoch is read in the same statement snapshot as the session row: a revocation
+      // either committed first (row gone) or bumps the epoch later, which the write
+      // transaction then sees as a mismatch.
+      `SELECT s.user_id, s.csrf_token, COALESCE(e.epoch, 0) AS auth_epoch
+       FROM ${this.t("sessions")} s LEFT JOIN ${this.t("user_auth_epoch")} e ON e.user_id = s.user_id
+       WHERE s.token_hash=$1 AND s.expires_at>$2 AND s.last_seen_at>$3`,
       [hashed, now, now - SESSION_IDLE_MS]
     );
     if (!rows[0]) return;
-    const user = await this.user(this.pool, rows[0].user_id);
-    if (!user?.active) return;
+    const found = await this.user(this.pool, rows[0].user_id);
+    if (!found?.active) return;
+    const user = { ...found, authEpoch: Number(rows[0].auth_epoch) };
     await this.pool.query(`UPDATE ${this.t("sessions")} SET last_seen_at=$1 WHERE token_hash=$2`, [
       now,
       hashed
@@ -37120,12 +37832,52 @@ var PgStore = class _PgStore {
       summary: String(r.summary)
     }));
   }
-  async apply(user, request) {
-    const hash = checkRequestEnvelope(user, request);
+  /** Current actor, re-read after the organization lock is held. */
+  async actor(db, snapshot) {
+    return currentActor(
+      snapshot,
+      await this.user(db, snapshot.id),
+      await this.authEpoch(db, snapshot.id)
+    );
+  }
+  async admin(db, snapshot) {
+    const actor = await this.actor(db, snapshot);
+    if (actor.role !== "admin") throw new StoreError("Forbidden", 403);
+    return actor;
+  }
+  async ping() {
+    await this.pool.query(`SELECT 1 FROM ${this.t("org_state")} LIMIT 1`);
+  }
+  async resetDemo(orgId, snapshot) {
+    if (!this.demoMode) throw new StoreError("Not found", 404);
     return this.tx(async (db) => {
-      const old = await this.state(db, user.orgId, true);
+      const old = await this.state(db, orgId, true);
+      const actor = await this.actor(db, snapshot);
+      if (actor.orgId !== orgId) throw new StoreError("Not found", 404);
+      const { state, event } = demoResetState(
+        this.demoMode,
+        old,
+        domainUser(actor),
+        createSeedState((/* @__PURE__ */ new Date()).toISOString())
+      );
+      await db.query(
+        `UPDATE ${this.t("org_state")} SET revision=$1,state_json=$2 WHERE org_id=$3`,
+        [state.revision, JSON.stringify(state), orgId]
+      );
+      await db.query(`DELETE FROM ${this.t("idempotency")} WHERE org_id=$1`, [orgId]);
+      await this.appendAudit(db, orgId, event);
+      return { revision: state.revision };
+    });
+  }
+  async apply(snapshot, request) {
+    const hash = checkRequestEnvelope(snapshot, request);
+    return this.tx(async (db) => {
+      const old = await this.state(db, snapshot.orgId, true);
+      const current = await this.actor(db, snapshot);
+      const user = domainUser(current);
+      checkRequestEnvelope(user, request);
       settingsGuard(old, user, request);
-      const authEpoch = await this.authEpoch(db, user.id);
+      const authEpoch = current.authEpoch;
       const { rows: prior } = await db.query(
         `SELECT request_hash,result_json FROM ${this.t("idempotency")}
          WHERE org_id=$1 AND user_id=$2 AND idem_key=$3`,
@@ -37151,9 +37903,11 @@ var PgStore = class _PgStore {
       return result;
     });
   }
-  async createUser(actor, input) {
+  async createUser(snapshot, input) {
     return this.tx(async (db) => {
-      const user = buildNewUser(actor, input, await this.state(db, actor.orgId, true));
+      const state = await this.state(db, snapshot.orgId, true);
+      const actor = domainUser(await this.admin(db, snapshot));
+      const user = buildNewUser(actor, input, state);
       try {
         await db.query("SAVEPOINT create_user");
         await db.query(`INSERT INTO ${this.t("users")} VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [
@@ -37178,9 +37932,10 @@ var PgStore = class _PgStore {
       return user;
     });
   }
-  async updateUser(actor, id, input) {
+  async updateUser(snapshot, id, input) {
     return this.tx(async (db) => {
-      const state = await this.state(db, actor.orgId, true);
+      const state = await this.state(db, snapshot.orgId, true);
+      const actor = domainUser(await this.admin(db, snapshot));
       const target = await this.user(db, id);
       const plan = planUserUpdate(
         actor,
@@ -37219,10 +37974,11 @@ var PgStore = class _PgStore {
       await this.setPassword(db, current, newPassword, actor);
     });
   }
-  async resetPassword(actor, id, newPassword) {
-    checkResetPassword(actor, id, newPassword);
+  async resetPassword(snapshot, id, newPassword) {
+    checkResetPassword(snapshot, id, newPassword);
     await this.tx(async (db) => {
-      await this.state(db, actor.orgId, true);
+      await this.state(db, snapshot.orgId, true);
+      const actor = await this.admin(db, snapshot);
       await this.setPassword(
         db,
         checkResetTarget(actor, await this.user(db, id)),
