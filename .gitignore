@@ -21,3 +21,8 @@ tests/.app-test-*/
 keys.txt
 *.key
 .env.local
+
+# Third-party Claude skill repositories (cloned locally; never commit)
+third-party-skills/
+# Local Claude Code project skills and settings (third-party content; not part of the product)
+.claude/
