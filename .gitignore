@@ -26,3 +26,5 @@ keys.txt
 third-party-skills/
 # Local Claude Code project skills and settings (third-party content; not part of the product)
 .claude/
+# Agent plan workspaces (ledgers, briefs, review packages)
+.superpowers/
