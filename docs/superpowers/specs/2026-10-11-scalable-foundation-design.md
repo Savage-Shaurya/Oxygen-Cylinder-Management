@@ -36,6 +36,8 @@ Stage 1 rebuilds storage, saving and loading on **plain Postgres tables** while 
 
 ## 4. Data model
 
+**Storage detail:** each business table has typed columns for everything the database must search, sort, join or constrain, plus a `doc jsonb` column holding the full record exactly as the domain code models it today (`shared/types.ts`). Loaders read `doc` and writers update the typed columns and `doc` together in one statement, so the existing domain rules run unchanged while every invariant is still enforced by real columns. Child tables (`order_cylinders`, `batch_cylinders`, `pickup_cylinders`, `cylinder_codes`) are kept in sync on every write.
+
 All tables live in a private schema (`cylvero`), carry `org_id`, use random UUID primary keys (except history sequences), have row-level security enabled with no policies, and grant nothing to `PUBLIC` or API roles. Times are `timestamptz`; calendar dates are `date` in India time; money is integer paise (`bigint`).
 
 | Table | Purpose | Key constraints / indexes |
