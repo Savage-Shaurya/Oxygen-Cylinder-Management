@@ -9,10 +9,10 @@
 
 ## Notes
 - First `wrangler dev` attempt failed config validation, not the platform: `You must provide a password - e.g. 'user:password@database.example.com:port/databasename'` (path `workers[0].hyperdrives.HYPERDRIVE`). Wrangler requires a password in `localConnectionString`; the local cluster uses trust auth, so a dummy password (`app_owner:spike@127.0.0.1:55432/...`) works. Real config must include one.
-- Timings are local `wrangler dev` (workerd on this Mac) measured client-side with curl; production Workers CPU limits were not measured.
-- Workers `Date.now()` does not advance during a request, so timing is client-side.
+- Timings are local `wrangler dev` (workerd on this Mac) measured client-side with curl; production Workers CPU limits were not measured (the limit below is Cloudflare's documentation, not a measurement).
+- Cloudflare documents that `Date.now()` does not advance during request execution, so timing is client-side.
 
 ## Decisions for Plan 1D
 - Adapter: Express via httpServerHandler (works under nodejs_compat; keeps existing routes).
 - Password hashing: keep scrypt (about 26 ms per hash locally; revisit only if production CPU limits bite).
-- scrypt ≈26 ms per sign-in exceeds the Workers free-plan CPU limit (~10 ms); production requires the Workers paid plan.
+- scrypt ≈26 ms per sign-in exceeds the Workers free-plan CPU limit (Cloudflare Workers documented free-plan CPU limit, ~10 ms per request; not measured in this spike); production requires the Workers paid plan.

@@ -10,6 +10,8 @@ const wrap =
 
 /** Db over a pg pool (direct Postgres or Cloudflare Hyperdrive). */
 export function pgDb(pool: pg.Pool): Db {
+  // An idle client can error (e.g. server restart); without a listener that crashes the process.
+  pool.on('error', (error) => console.error('Idle database connection error:', error.message));
   return {
     kind: 'postgres',
     query: wrap(pool),
@@ -18,6 +20,7 @@ export function pgDb(pool: pg.Pool): Db {
     },
     async transaction(work) {
       const client = await pool.connect();
+      let broken: Error | undefined;
       try {
         await client.query('BEGIN');
         const tx: Queryable = {
@@ -30,10 +33,13 @@ export function pgDb(pool: pg.Pool): Db {
         await client.query('COMMIT');
         return out;
       } catch (error) {
-        await client.query('ROLLBACK').catch(() => undefined);
+        await client.query('ROLLBACK').catch((rollbackError: Error) => {
+          broken = rollbackError;
+        });
         throw error;
       } finally {
-        client.release();
+        // Releasing with an error evicts a connection whose rollback failed.
+        client.release(broken);
       }
     },
     close: () => pool.end(),

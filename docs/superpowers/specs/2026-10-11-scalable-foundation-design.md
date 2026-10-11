@@ -36,28 +36,28 @@ Stage 1 rebuilds storage, saving and loading on **plain Postgres tables** while 
 
 ## 4. Data model
 
-**Storage detail:** each business table has typed columns for everything the database must search, sort, join or constrain, plus a `doc jsonb` column holding the full record exactly as the domain code models it today (`shared/types.ts`). Loaders read `doc` and writers update the typed columns and `doc` together in one statement, so the existing domain rules run unchanged while every invariant is still enforced by real columns. Child tables (`order_cylinders`, `batch_cylinders`, `pickup_cylinders`, `cylinder_codes`) are kept in sync on every write.
+**Storage detail:** every field of every record is a typed column; there are no JSON copies of records. Lists inside a record become child tables (`invoice_lines`, `order_delivery_proofs`, `batch_cylinders` (with a `rejected` flag), `batch_recipient_trace`, `order_delivery_proofs`, `movement_changes`, `user_branches`, `cylinder_codes` for current and previous tags). A repository layer (`server/repo/`) maps rows to the domain objects in `shared/types.ts` and back, so the existing business rules run on the same objects while the database stores, indexes and constrains every field.
 
-All tables live in a private schema (`cylvero`), carry `org_id`, use random UUID primary keys (except history sequences), have row-level security enabled with no policies, and grant nothing to `PUBLIC` or API roles. Times are `timestamptz`; calendar dates are `date` in India time; money is integer paise (`bigint`).
+All tables live in a private schema (`cylvero`), carry `org_id`, keep the text ids used by today's data as primary keys, carried over unchanged (history tables use sequences), have row-level security enabled with no policies, and grant nothing to `PUBLIC` or API roles. Times are `timestamptz`; calendar dates are `date` in India time; money is integer paise (`bigint`).
 
 | Table | Purpose | Key constraints / indexes |
 |---|---|---|
 | `orgs`, `settings` | Organization and company profile (name, address, GSTIN, tax, rent policy), with `version`. | — |
-| `branches` | Plants/branches. | unique (`org_id`, `code`) |
-| `parties` | Customers and suppliers (type, contact, GSTIN, rent rate, free days, deposit, credit limit), `version`. | unique (`org_id`, `branch_id`, lower(`name`)) |
-| `cylinders` | **Current state only**: serial, manufacturer, gas, size, `owner_id`, `branch_id`, custody kind + holder id, condition, contents, test dates, certificate, current `batch_id`, `fill_count`, incident, written-off time, `version`. | unique (`org_id`, lower(`manufacturer`), lower(`serial`)); indexes on (`org_id`, custody, holder), (`org_id`, `branch_id`, condition), (`org_id`, `test_due`) |
-| `cylinder_codes` | Every code that identifies a cylinder: current tag, previous tags, serial, and (Stage 2) outside codes with issuer. `kind`, `issuer`, `code`, `normalized_code`, `active`. | **unique (`org_id`, `issuer`, `normalized_code`)**: one code → one cylinder; index on `normalized_code` for scanning |
-| `movements` | **Append-only lifeline**: `seq` (bigserial), cylinder, action, from (kind, id), to (kind, id), time, actor, reference, notes, changed fields only. | triggers block UPDATE/DELETE/TRUNCATE; index (`org_id`, `cylinder_id`, `seq`), (`org_id`, `at`) |
-| `orders` | Order header: customer, branch, gas, size, quantity, priority, due date, price, status, vehicle, driver, delivery proofs, `version`. | index (`org_id`, `status`), (`org_id`, `party_id`) |
-| `order_cylinders` | Each cylinder on an order and its state: manifest / delivered / unloaded, proof reference. | unique (`order_id`, `cylinder_id`); **partial unique index: a cylinder can be on only one order in transit** |
-| `batches`, `batch_cylinders` | Filling, supplier and purchase batches; members and rejected members; release and recall data; recipient trace. | unique (`batch_id`, `cylinder_id`) |
-| `pickups`, `pickup_cylinders` | Collection trips and their cylinders (collected / received / reversed). | unique (`pickup_id`, `cylinder_id`) |
+| `branches` | Plants/branches (name, city). There is no branch code in the domain. | unique (`org_id`, `name_key`) |
+| `parties` | Customers and suppliers (type, contact, phone, address, GSTIN, rent rate, free days, deposit, credit limit), `version`. | unique (`org_id`, `branch_id`, `name_key`) |
+| `cylinders` | **Current state only**, all typed columns: serial, manufacturer, gas, size, `owner_party_id` (null = company owned), `branch_id`, custody kind + custodian id, condition, contents, test dates, certificate, current `batch_id` (deferred foreign key), `fill_count`, incident fields, written-off time, `version`. | unique (`org_id`, `manufacturer_key`, `serial_key`); indexes on (`org_id`, custody, custodian), (`org_id`, `branch_id`, condition), (`org_id`, `test_due`) |
+| `cylinder_codes` | Every code that identifies a cylinder: current tag, previous tags, serial, and (Stage 2) outside codes with issuer. `kind`, `issuer`, `code`, `normalized_code`, `active`. | **unique (`org_id`, `issuer`, `normalized_code`)**: one code → one cylinder (tags use issuer `''`, serials `serial:<manufacturer_key>`); one current tag per cylinder; index on `normalized_code` for scanning |
+| `movements`, `movement_changes` | **Append-only lifeline**: `seq` (bigserial), cylinder, action, from/to refs, time, actor, reference, notes. `movement_changes` holds one row per changed field (before/after). | triggers block UPDATE/DELETE/TRUNCATE on both; index (`org_id`, `cylinder_id`, `seq`), (`org_id`, `at`) |
+| `orders`, `order_delivery_proofs`, `order_delivery_proof_cylinders` | Order header (customer, branch, gas, size, quantity, priority, due date, price, status, vehicle, driver, challan snapshot) and delivery proofs with their cylinders, `version`. | check quantity > 0, price >= 0; index (`org_id`, `status`), (`org_id`, `party_id`) |
+| `order_cylinders`, `vehicle_slots` | Each cylinder on an order with position and state (on vehicle / delivered / unloaded). `vehicle_slots` is the cross-guard against an order truck and a collection at once. | **partial unique index: a cylinder can be on only one order in transit**, plus one vehicle slot per cylinder |
+| `batches`, `batch_cylinders`, `batch_recipient_trace` | Filling, supplier and purchase batches; members (with rejected flag), release and recall data, recipient trace. | unique (`org_id`, `number`); primary key (`batch_id`, `cylinder_id`) |
+| `pickups`, `pickup_cylinders` | Collection trips and their cylinders (on vehicle / received / reversed). | primary key (`pickup_id`, `cylinder_id`); partial unique: one in-transit pickup per cylinder |
 | `rentals` | Holding periods per cylinder/customer (start, end, rate, free days, stop reason). | **partial unique: one open rental per cylinder**; index (`org_id`, `party_id`) where open |
-| `invoices`, `invoice_lines` | Gas, rental and credit documents with issuer and bill-to snapshots, tax, totals, paid, credited, applied credit, `version`. | unique (`org_id`, `series`, `number`) |
-| `receipts` | Payments, deposits, refunds, credit allocations/refunds (with reversal fields). | unique (`org_id`, `party_id`, `method`, lower(`reference`)) for non-cash |
+| `invoices`, `invoice_lines` | Gas, rental and credit documents with issuer and bill-to snapshot columns, tax, totals, paid, credited, applied credit, `version`; lines as child rows. | unique (`org_id`, `number`) |
+| `receipts` | Payments, deposits, refunds, credit allocations/refunds (with reversal fields). | unique (`org_id`, `method`, `reference_key`): a reference is used once per method across the whole organization, cash included (today's rule) |
 | `exceptions` | Safety and reconciliation alerts (recall recovery, loss, unknown/swapped returns), status, resolution. | index (`org_id`, `status`) |
 | `document_counters` | Next number per series and Indian fiscal year. | primary key (`org_id`, `series`, `fiscal_year`) |
-| `users`, `sessions`, `idempotency`, `user_auth_epoch`, `login_attempts`, `audit_log`, `schema_migrations` | As today (sessions store token hashes; audit log append-only). | as today |
+| `users`, `user_branches`, `sessions`, `idempotency`, `user_auth_epoch`, `login_attempts`, `audit_log`, `schema_migrations` | As today, typed: branch access in `user_branches` (no JSON list), idempotency stores typed result fields, sessions store token hashes, audit log append-only. | as today |
 
 ## 5. Saving (write path)
 

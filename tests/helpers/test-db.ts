@@ -11,6 +11,7 @@ export function forEachDb(title: string, body: (db: Db) => Promise<void>) {
     try {
       await body(db);
     } finally {
+      created.length = 0; // in-memory database needs no cleanup
       await db.close();
     }
   });
@@ -21,12 +22,21 @@ export function forEachDb(title: string, body: (db: Db) => Promise<void>) {
     try {
       await body(db);
     } finally {
-      await db.close();
+      try {
+        for (const name of created.splice(0))
+          await db.exec(`DROP SCHEMA IF EXISTS "${name}" CASCADE`);
+      } finally {
+        await db.close();
+      }
     }
   });
 }
 
 let counter = 0;
+const created: string[] = [];
 /** A unique, valid schema name per test so tests never share tables. */
-export const freshSchema = (prefix = 't') =>
-  `${prefix}_${process.pid}_${Date.now() % 100000}_${++counter}`;
+export const freshSchema = (prefix = 't') => {
+  const name = `${prefix}_${process.pid}_${Date.now() % 100000}_${++counter}`;
+  created.push(name);
+  return name;
+};

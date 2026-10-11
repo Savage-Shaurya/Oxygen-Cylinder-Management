@@ -35,3 +35,12 @@ export function normalizeCode(code: string): string {
   if (!out) throw new Error('Code is empty');
   return out;
 }
+
+/** Case-insensitive uniqueness key computed in the app, so PGlite and hosted Postgres agree
+ * regardless of database collation. */
+export function textKey(value: string): string {
+  if (/[\u0000-\u001f\u007f]/.test(value)) throw new Error('Text contains control characters');
+  const out = value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!out) throw new Error('Text is empty');
+  return out;
+}

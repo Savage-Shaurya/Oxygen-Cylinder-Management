@@ -14,8 +14,21 @@ const API_ROLES = ['anon', 'authenticated'];
 export const migrationChecksum = (sql: string) => createHash('sha256').update(sql).digest('hex');
 
 /** Applies pending migrations once, under a lock, then locks the schema down. */
-export async function migrate(db: Db, schema: string, migrations: Migration[] = MIGRATIONS) {
+export async function migrate(
+  db: Db,
+  schema: string,
+  migrations: Migration[] = MIGRATIONS,
+  options: { runtimeRole?: string } = {},
+) {
   const s = assertSchemaName(schema);
+  const seen = new Set<number>();
+  for (const m of migrations) {
+    if (seen.has(m.version)) throw new Error(`Duplicate migration version ${m.version}`);
+    seen.add(m.version);
+  }
+  const role = options.runtimeRole;
+  if (role !== undefined && !/^[a-z_][a-z0-9_]{0,40}$/.test(role))
+    throw new Error('Invalid role name');
   return db.transaction(async (tx) => {
     // One migrator at a time, even when several server instances start together.
     await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`cylvero-migrate:${schema}`]);
@@ -43,6 +56,7 @@ export async function migrate(db: Db, schema: string, migrations: Migration[] = 
       ran.push(m.version);
     }
     await lockDown(tx, schema, s);
+    if (role !== undefined) await grantRuntime(tx, s, role);
     return ran;
   });
 }
@@ -54,7 +68,9 @@ async function lockDown(tx: Queryable, schema: string, s: string) {
     [schema],
   );
   for (const { tablename } of tables)
-    await tx.exec(`ALTER TABLE ${s}."${tablename.replaceAll('"', '')}" ENABLE ROW LEVEL SECURITY;`);
+    await tx.exec(
+      `ALTER TABLE ${s}."${tablename.replaceAll('"', '""')}" ENABLE ROW LEVEL SECURITY;`,
+    );
   const { rows: roles } = await tx.query<{ rolname: string }>(
     'SELECT rolname FROM pg_roles WHERE rolname = ANY($1)',
     [API_ROLES],
@@ -68,4 +84,26 @@ async function lockDown(tx: Queryable, schema: string, s: string) {
     ALTER DEFAULT PRIVILEGES IN SCHEMA ${s} REVOKE ALL ON TABLES FROM ${grantees};
     ALTER DEFAULT PRIVILEGES IN SCHEMA ${s} REVOKE ALL ON SEQUENCES FROM ${grantees};
     ALTER DEFAULT PRIVILEGES IN SCHEMA ${s} REVOKE ALL ON FUNCTIONS FROM ${grantees};`);
+}
+
+/** Least privilege for the app's own connection: data access, no DDL, no TRUNCATE, and the
+ * append-only tables and migration history stay read-only. */
+async function grantRuntime(tx: Queryable, s: string, role: string) {
+  const { rowCount } = await tx.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [role]);
+  if (!rowCount) throw new Error(`Runtime role ${role} does not exist`);
+  const r = `"${role}"`;
+  await tx.exec(`
+    GRANT USAGE ON SCHEMA ${s} TO ${r};
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${s} TO ${r};
+    REVOKE UPDATE, DELETE ON ${s}.schema_migrations FROM ${r};
+    REVOKE INSERT ON ${s}.schema_migrations FROM ${r};
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${s} TO ${r};`);
+  // Core-schema append-only tables (absent in minimal test migrations).
+  for (const t of ['movements', 'movement_changes', 'audit_log']) {
+    const { rowCount: has } = await tx.query(
+      'SELECT 1 FROM pg_tables WHERE schemaname = $1 AND tablename = $2',
+      [s.slice(1, -1), t],
+    );
+    if (has) await tx.exec(`REVOKE UPDATE, DELETE ON ${s}."${t}" FROM ${r};`);
+  }
 }

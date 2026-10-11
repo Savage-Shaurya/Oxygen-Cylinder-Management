@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { forEachDb, freshSchema } from './helpers/test-db.js';
-import { assertSchemaName, normalizeCode } from '../server/db/sql.js';
+import pg from 'pg';
+import { pgDb } from '../server/db/pg-adapter.js';
+import { assertSchemaName, normalizeCode, textKey } from '../server/db/sql.js';
 
 test('schema names are validated and quoted', () => {
   assert.equal(assertSchemaName('cylvero'), '"cylvero"');
@@ -56,4 +58,45 @@ forEachDb('transaction returns the work result and commits', async (db) => {
   });
   assert.equal(out, 'done');
   assert.equal((await db.query(`SELECT * FROM ${s}.t`)).rowCount, 3);
+});
+
+forEachDb('an error thrown after a write propagates and rolls the write back', async (db) => {
+  const s = freshSchema();
+  await db.exec(`CREATE SCHEMA ${s}; CREATE TABLE ${s}.t(id int PRIMARY KEY);`);
+  await assert.rejects(
+    db.transaction(async (tx) => {
+      await tx.query(`INSERT INTO ${s}.t VALUES (1)`);
+      throw new Error('stop');
+    }),
+    /^Error: stop$/,
+  );
+  assert.equal((await db.query(`SELECT * FROM ${s}.t`)).rowCount, 0);
+});
+
+test(
+  'failed transactions release their connection back to the pool',
+  { skip: process.env.CTMS_TEST_PG_URL ? false : 'set CTMS_TEST_PG_URL' },
+  async () => {
+    const db = pgDb(new pg.Pool({ connectionString: process.env.CTMS_TEST_PG_URL, max: 1 }));
+    try {
+      for (let i = 0; i < 5; i++)
+        await assert.rejects(
+          db.transaction(async () => {
+            throw new Error('stop');
+          }),
+        );
+      const started = Date.now();
+      await db.query('SELECT 1');
+      assert.ok(Date.now() - started < 2000);
+    } finally {
+      await db.close();
+    }
+  },
+);
+
+test('text keys fold case, width and whitespace', () => {
+  assert.equal(textKey(' Demo  Clinic '), 'demo clinic');
+  assert.equal(textKey('ＤＥＭＯ'), 'demo');
+  assert.throws(() => textKey('   '), /Text is empty/);
+  assert.throws(() => textKey('a\u0000b'), /Text contains control characters/);
 });

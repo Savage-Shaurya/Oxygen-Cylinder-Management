@@ -86,7 +86,68 @@ test(
       const runs = await Promise.all(dbs.map((db) => migrate(db, s, [one, two])));
       assert.deepEqual(runs.flat().sort(), [1, 2]);
     } finally {
+      await dbs[0].exec(`DROP SCHEMA IF EXISTS "${s}" CASCADE`);
       await Promise.all(dbs.map((db) => db.close()));
+    }
+  },
+);
+
+forEachDb('duplicate migration versions are rejected before anything is created', async (db) => {
+  const s = freshSchema();
+  await assert.rejects(
+    migrate(db, s, [one, { ...two, version: 1 }]),
+    /Duplicate migration version 1/,
+  );
+  const tables = await db.query(`SELECT 1 FROM information_schema.tables WHERE table_schema=$1`, [
+    s,
+  ]);
+  assert.equal(tables.rowCount, 0);
+});
+
+forEachDb('an unknown runtime role is rejected', async (db) => {
+  await assert.rejects(
+    migrate(db, freshSchema(), [one], { runtimeRole: 'nope_role' }),
+    /Runtime role nope_role does not exist/,
+  );
+  await assert.rejects(
+    migrate(db, freshSchema(), [one], { runtimeRole: 'Bad-Role' }),
+    /Invalid role name/,
+  );
+});
+
+test(
+  'the runtime role gets least privilege',
+  {
+    skip:
+      process.env.CTMS_TEST_PG_URL && process.env.CTMS_TEST_PG_ADMIN_URL
+        ? false
+        : 'set CTMS_TEST_PG_URL and CTMS_TEST_PG_ADMIN_URL',
+  },
+  async () => {
+    const role = 'cylvero_runtime_test';
+    const admin = new pg.Client({ connectionString: process.env.CTMS_TEST_PG_ADMIN_URL });
+    await admin.connect();
+    const owner = pgDb(new pg.Pool({ connectionString: process.env.CTMS_TEST_PG_URL }));
+    const s = freshSchema('rt');
+    try {
+      const exists = await admin.query('SELECT 1 FROM pg_roles WHERE rolname=$1', [role]);
+      if (!exists.rowCount) await admin.query(`CREATE ROLE ${role} NOLOGIN`);
+      // The runtime role bypasses row-level security (tables have RLS and no policies).
+      await admin.query(`ALTER ROLE ${role} BYPASSRLS`);
+      await migrate(owner, s, [one], { runtimeRole: role });
+      await admin.query(`SET ROLE ${role}`);
+      await admin.query(`INSERT INTO "${s}".widgets(id, org_id) VALUES (1,'o')`);
+      await assert.rejects(
+        admin.query(`UPDATE "${s}".schema_migrations SET name='x'`),
+        /permission denied/,
+      );
+      await assert.rejects(admin.query(`TRUNCATE "${s}".widgets`), /permission denied/);
+      await assert.rejects(admin.query(`CREATE TABLE "${s}".nope(id int)`), /permission denied/);
+    } finally {
+      await admin.query('RESET ROLE').catch(() => undefined);
+      await admin.end();
+      await owner.exec(`DROP SCHEMA IF EXISTS "${s}" CASCADE`);
+      await owner.close();
     }
   },
 );
